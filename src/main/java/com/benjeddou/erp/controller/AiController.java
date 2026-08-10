@@ -38,19 +38,8 @@ public class AiController {
         }
 
         try {
-            // Simulate processing time for the AI OCR model (e.g. 2.5 seconds)
-            Thread.sleep(2500);
-            
-            // Mock extracted data
-            Map<String, Object> extractedData = new HashMap<>();
-            extractedData.put("fournisseur", "Tunisie Telecom SA");
-            extractedData.put("dateFacture", "2026-06-25");
-            extractedData.put("montantHt", 1250.00);
-            extractedData.put("tva", 19.0);
-            extractedData.put("montantTva", 237.50);
-            extractedData.put("montantTtc", 1487.50);
-            extractedData.put("numeroFacture", "FAC-TT-" + (int)(Math.random() * 10000));
-            extractedData.put("confianceOcr", 98.5); // 98.5% confidence
+            // Appelle le moteur d'extraction local (PDFBox + Regex)
+            Map<String, Object> extractedData = openAIService.processLocalOcr(file);
             
             Map<String, Object> response = new HashMap<>();
             response.put("message", "Extraction réussie");
@@ -58,7 +47,8 @@ public class AiController {
             
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(new com.benjeddou.erp.payload.response.MessageReponse("Erreur lors de l'extraction OCR."));
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(new com.benjeddou.erp.payload.response.MessageReponse("Erreur lors de l'extraction OCR : " + e.getMessage()));
         }
     }
 }

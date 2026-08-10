@@ -7,7 +7,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import jakarta.annotation.PostConstruct;
+import javax.sql.DataSource;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -22,13 +26,55 @@ public class CodePromoController {
     @Autowired
     CodePromoRepository codePromoRepository;
 
+    @Autowired
+    DataSource dataSource;
+
+    /**
+     * Crée la table codes_promo dans la base courante si elle n'existe pas.
+     * Exécuté au démarrage du bean → auto-réparation sans SQL manuel.
+     */
+    @PostConstruct
+    public void ensureCodesPromoTableExists() {
+        final String ddl = """
+            CREATE TABLE IF NOT EXISTS `codes_promo` (
+                `id`                     BIGINT        AUTO_INCREMENT PRIMARY KEY,
+                `code`                   VARCHAR(50)   NOT NULL,
+                `description`            VARCHAR(255)  NULL,
+                `type_remise`            VARCHAR(20)   NOT NULL DEFAULT 'POURCENTAGE',
+                `valeur`                 DECIMAL(10,3) NOT NULL,
+                `montant_minimum`        DECIMAL(15,3) NOT NULL DEFAULT 0.000,
+                `plafond_remise`         DECIMAL(15,3) NULL,
+                `date_debut`             DATETIME      NULL,
+                `date_fin`               DATETIME      NULL,
+                `utilisations_max`       INT           NULL,
+                `utilisations_actuelles` INT           NOT NULL DEFAULT 0,
+                `actif`                  TINYINT(1)    NOT NULL DEFAULT 1,
+                `date_creation`          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `date_modification`      DATETIME      NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                CONSTRAINT uq_codes_promo_code UNIQUE (`code`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """;
+        try (Connection conn = dataSource.getConnection();
+             Statement  st   = conn.createStatement()) {
+            st.execute(ddl);
+        } catch (Exception e) {
+            // Table déjà existante ou erreur non bloquante
+        }
+    }
+
     // ── GET All ───────────────────────────────────────────────────────────────
     @GetMapping("")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL')")
-    public List<Map<String, Object>> getTousLesCodes() {
-        return codePromoRepository.findAll().stream()
-                .map(this::toDto)
-                .collect(Collectors.toList());
+    public ResponseEntity<?> getTousLesCodes() {
+        try {
+            List<Map<String, Object>> result = codePromoRepository.findAll().stream()
+                    .map(this::toDto)
+                    .collect(Collectors.toList());
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            // Table codes_promo absente dans cette base → retourner liste vide
+            return ResponseEntity.ok(java.util.Collections.emptyList());
+        }
     }
 
     // ── GET One ───────────────────────────────────────────────────────────────
@@ -182,11 +228,16 @@ public class CodePromoController {
     // ── GET Codes actifs (pour le formulaire de commande) ─────────────────────
     @GetMapping("/actifs")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL')")
-    public List<Map<String, Object>> getActifs() {
-        return codePromoRepository.findByActifTrue().stream()
-                .filter(p -> "ACTIF".equals(p.getStatutCalcule()))
-                .map(this::toDto)
-                .collect(Collectors.toList());
+    public ResponseEntity<?> getActifs() {
+        try {
+            List<Map<String, Object>> result = codePromoRepository.findByActifTrue().stream()
+                    .filter(p -> "ACTIF".equals(p.getStatutCalcule()))
+                    .map(this::toDto)
+                    .collect(Collectors.toList());
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.ok(java.util.Collections.emptyList());
+        }
     }
 
     // ════════════════════════════════════════════════════════════

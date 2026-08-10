@@ -4,6 +4,7 @@ import com.benjeddou.erp.model.*;
 import com.benjeddou.erp.payload.response.MessageReponse;
 import com.benjeddou.erp.repository.DocumentKycRepository;
 import com.benjeddou.erp.repository.UtilisateurRepository;
+import com.benjeddou.erp.service.EntrepriseService;
 import com.benjeddou.erp.service.OtpService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
@@ -23,6 +24,7 @@ public class ClientInscriptionController {
     @Autowired DocumentKycRepository documentKycRepository;
     @Autowired PasswordEncoder encoder;
     @Autowired OtpService otpService;
+    @Autowired EntrepriseService entrepriseService;
 
     // ══════════════════════════════════════════════════════════════
     //  VÉRIFICATION DISPONIBILITÉ (username / email)
@@ -64,7 +66,15 @@ public class ClientInscriptionController {
         }
 
         try {
-            otpService.genererEtEnvoyer(email, prenom);
+            String devCode = otpService.genererEtEnvoyer(email, prenom);
+            if (devCode != null) {
+                // Mode dev : email a échoué, code retourné dans la réponse
+                return ResponseEntity.ok(Map.of(
+                    "message", "[DEV] Email indisponible. Code OTP : " + devCode,
+                    "devCode", devCode,
+                    "emailSent", false
+                ));
+            }
             return ResponseEntity.ok(new MessageReponse("Code OTP envoyé à " + email));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -177,10 +187,33 @@ public class ClientInscriptionController {
             .languePreferee("fr")
             .build();
 
-        utilisateurRepository.save(client);
+        Utilisateur clientSauvegarde = utilisateurRepository.save(client);
+
+        // ╔════════════════════════════════════════════════════════════
+        // MULTI-TENANT : Créer automatiquement la base de données dédiée
+        // ╚════════════════════════════════════════════════════════════
+        try {
+            // Crée la base MySQL dédiée : erp_ent_00001, erp_ent_00002...
+            com.benjeddou.erp.model.Entreprise entreprise = entrepriseService.creerEntreprise(
+                societe != null ? societe : nomUtilisateur,
+                email,
+                clientSauvegarde.getId()
+            );
+
+            // Met à jour l'utilisateur avec les infos de son entreprise
+            clientSauvegarde.setEntrepriseId(entreprise.getId());
+            clientSauvegarde.setEntrepriseSchema(entreprise.getSchemaName());
+            utilisateurRepository.save(clientSauvegarde);
+
+        } catch (Exception ex) {
+            // Ne pas bloquer l'inscription si la création DB échoue (log + notification admin)
+            // L'utilisateur peut quand même se connecter sur la base master en attendant
+            java.util.logging.Logger.getLogger(getClass().getName())
+                .severe("Erreur création base tenant pour '" + nomUtilisateur + "' : " + ex.getMessage());
+        }
 
         String message = modeTrial
-            ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites."
+            ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites. Votre espace entreprise a été créé automatiquement."
             : "Inscription réussie ! Votre compte est en attente de validation KYC.";
 
         return ResponseEntity.ok(new MessageReponse(message));

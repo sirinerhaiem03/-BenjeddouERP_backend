@@ -44,6 +44,24 @@ public class EmailService {
     }
 
     /**
+     * Email simple en texte brut — utilisé par SessionService, OtpService, etc.
+     */
+    public void envoyerEmailSimple(String destinataire, String sujet, String corps) {
+        try {
+            MimeMessage msg = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(msg, false, "UTF-8");
+            helper.setFrom(fromEmail);
+            helper.setTo(destinataire);
+            helper.setSubject(sujet);
+            helper.setText(corps, false);
+            mailSender.send(msg);
+        } catch (Exception e) {
+            // Log sans faire rater la requête principale
+            System.err.println("[EmailService] Erreur envoi email simple vers " + destinataire + " : " + e.getMessage());
+        }
+    }
+
+    /**
      * Email envoyé au client quand son dossier KYC est validé par l'admin.
      * Invite le client à se connecter et choisir son abonnement.
      */

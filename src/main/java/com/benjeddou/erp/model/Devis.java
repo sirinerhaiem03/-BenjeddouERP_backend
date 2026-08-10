@@ -4,8 +4,11 @@ import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 
 @Entity
 @Table(name = "devis")
@@ -38,7 +41,7 @@ public class Devis {
     @Builder.Default
     private BigDecimal montantTotal = BigDecimal.ZERO;
 
-    @Column(length = 500)
+    @Column(length = 2000)
     private String notes;
 
     @ManyToOne(fetch = FetchType.EAGER)
@@ -52,4 +55,9 @@ public class Devis {
     @UpdateTimestamp
     @Column(name = "date_modification")
     private LocalDateTime dateModification;
+
+    @OneToMany(mappedBy = "devis", fetch = FetchType.EAGER, cascade = CascadeType.ALL)
+    @JsonManagedReference
+    @Builder.Default
+    private List<LigneDevis> lignesDevis = new ArrayList<>();
 }

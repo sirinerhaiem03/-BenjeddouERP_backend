@@ -73,11 +73,112 @@ public class StripeController {
     UtilisateurRepository utilisateurRepository;
 
     @Autowired
+    com.benjeddou.erp.repository.FactureRepository factureRepository;
+
+    @Autowired
     EmailService emailService;
 
     // ══════════════════════════════════════════════════════════════
-    //  CRÉER UNE SESSION STRIPE CHECKOUT
+    //  PAIEMENT D'UNE FACTURE CLIENT
+    //  POST /api/stripe/checkout?factureId={id}
     // ══════════════════════════════════════════════════════════════
+    @PostMapping("/checkout")
+    public ResponseEntity<?> checkoutFacture(@RequestParam Long factureId) {
+        if (stripeSecretKey == null || stripeSecretKey.isBlank() || stripeSecretKey.equals("sk_test_REMPLACE_MOI")) {
+            return ResponseEntity.badRequest().body(new MessageReponse(
+                "Stripe non configuré. Ajoutez stripe.secret.key dans application.properties."));
+        }
+
+        Optional<Facture> factureOpt = factureRepository.findById(factureId);
+        if (factureOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Facture facture = factureOpt.get();
+
+        if ("PAYEE".equals(facture.getStatut())) {
+            return ResponseEntity.badRequest().body(new MessageReponse("Cette facture est déjà payée."));
+        }
+
+        try {
+            Stripe.apiKey = stripeSecretKey;
+
+            // Montant en centimes EUR (Stripe n'accepte pas TND)
+            // 1 EUR = 100 centimes → 297.500 TND → 29750 centimes
+            long montantCentimes = facture.getMontantTotal()
+                .multiply(new BigDecimal("100")).longValue();
+
+            String nomFacture = "Facture " + facture.getNumeroFacture();
+
+            SessionCreateParams params = SessionCreateParams.builder()
+                .setMode(SessionCreateParams.Mode.PAYMENT)
+                .setSuccessUrl("http://localhost:4200/dashboard/client-factures?paiement=succes&sessionId={CHECKOUT_SESSION_ID}&factureId=" + factureId)
+                .setCancelUrl("http://localhost:4200/dashboard/client-factures?paiement=annule")
+                .addLineItem(SessionCreateParams.LineItem.builder()
+                    .setQuantity(1L)
+                    .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
+                        .setCurrency("eur")
+                        .setUnitAmount(montantCentimes)
+                        .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
+                            .setName(nomFacture)
+                            .setDescription("Paiement en ligne via ERP Benjeddou (montant en EUR)")
+                            .build())
+                        .build())
+                    .build())
+                .putMetadata("type", "facture")
+                .putMetadata("facture_id", String.valueOf(factureId))
+                .build();
+
+            Session session = Session.create(params);
+
+            return ResponseEntity.ok(Map.of(
+                "url",       session.getUrl(),
+                "sessionId", session.getId(),
+                "factureId", factureId
+            ));
+
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(new MessageReponse("Erreur Stripe : " + e.getMessage()));
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  CONFIRMATION DE PAIEMENT FACTURE (appelé depuis la page de succès Angular)
+    //  GET /api/stripe/facture-succes?sessionId=...&factureId=...
+    // ══════════════════════════════════════════════════════════════
+    @GetMapping("/facture-succes")
+    public ResponseEntity<?> confirmerPaiementFacture(
+            @RequestParam String sessionId,
+            @RequestParam Long factureId) {
+        try {
+            Stripe.apiKey = stripeSecretKey;
+            Session session = Session.retrieve(sessionId);
+
+            if ("complete".equals(session.getPaymentStatus()) || "paid".equals(session.getPaymentStatus())) {
+                Optional<Facture> factureOpt = factureRepository.findById(factureId);
+                if (factureOpt.isEmpty()) {
+                    return ResponseEntity.notFound().build();
+                }
+                Facture facture = factureOpt.get();
+                facture.setStatut("PAYEE");
+                factureRepository.save(facture);
+
+                return ResponseEntity.ok(Map.of(
+                    "message",  "Paiement confirmé. Facture marquée comme payée.",
+                    "factureId", factureId,
+                    "statut",   "PAYEE"
+                ));
+            } else {
+                return ResponseEntity.badRequest().body(new MessageReponse(
+                    "Paiement non finalisé (statut Stripe : " + session.getPaymentStatus() + ")"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                .body(new MessageReponse("Erreur vérification : " + e.getMessage()));
+        }
+    }
+
 
     @PostMapping("/create-checkout")
     public ResponseEntity<?> createCheckoutSession(@RequestBody Map<String, Object> body) {

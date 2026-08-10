@@ -31,13 +31,21 @@ public class OtpService {
     @Value("${spring.mail.username}")
     private String fromEmail;
 
-    // ─────────────────────────────────────────────
-    //  Générer et envoyer un OTP par email
-    // ─────────────────────────────────────────────
-    public void genererEtEnvoyer(String email, String prenom) throws Exception {
+    /**
+     * Génère un OTP, le stocke, essaie de l'envoyer par email.
+     * @return null si email envoyé avec succès, le code si l'email a échoué (mode dév)
+     */
+    public String genererEtEnvoyer(String email, String prenom) {
         String code = String.format("%06d", random.nextInt(1_000_000));
         otpStore.put(email, new OtpEntry(code, Instant.now()));
-        envoyerEmail(email, prenom, code);
+        try {
+            envoyerEmail(email, prenom, code);
+            return null; // Email envoyé avec succès
+        } catch (Exception e) {
+            // Email a échoué (SMTP indisponible) — on retourne le code pour le mode dév
+            System.err.println("[OtpService] ⚠️ Email non envoyé : " + e.getMessage());
+            return code; // Le code est quand même stocké en mémoire et valide
+        }
     }
 
     // ─────────────────────────────────────────────

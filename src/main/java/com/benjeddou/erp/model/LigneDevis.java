@@ -3,6 +3,7 @@ package com.benjeddou.erp.model;
 import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
+import com.fasterxml.jackson.annotation.JsonBackReference;
 
 @Entity
 @Table(name = "ligne_devis")
@@ -33,5 +34,6 @@ public class LigneDevis {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "devis_id", nullable = false)
+    @JsonBackReference
     private Devis devis;
 }

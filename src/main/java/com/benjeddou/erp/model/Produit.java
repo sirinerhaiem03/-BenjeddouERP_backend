@@ -1,6 +1,7 @@
 package com.benjeddou.erp.model;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.*;
 import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -20,18 +21,26 @@ public class Produit {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @NotBlank(message = "Le nom du produit est obligatoire")
+    @Size(max = 100, message = "Le nom ne peut pas dépasser 100 caractères")
     @Column(length = 100, nullable = false)
     private String nom;
 
+    @NotBlank(message = "La référence est obligatoire")
+    @Size(max = 50, message = "La référence ne peut pas dépasser 50 caractères")
     @Column(length = 50, unique = true, nullable = false)
     private String reference;
 
     @Column(columnDefinition = "TEXT")
     private String description;
 
+    @NotNull(message = "Le prix unitaire est obligatoire")
+    @DecimalMin(value = "0.0", inclusive = false, message = "Le prix unitaire doit être positif")
     @Column(name = "prix_unitaire", precision = 15, scale = 3, nullable = false)
     private BigDecimal prixUnitaire;
 
+    @NotNull(message = "Le prix d'achat est obligatoire")
+    @DecimalMin(value = "0.0", inclusive = false, message = "Le prix d'achat doit être positif")
     @Column(name = "prix_achat", precision = 15, scale = 3, nullable = false)
     private BigDecimal prixAchat;
 

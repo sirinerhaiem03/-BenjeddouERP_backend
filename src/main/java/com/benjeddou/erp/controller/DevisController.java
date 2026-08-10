@@ -25,6 +25,7 @@ public class DevisController {
     @Autowired ProduitRepository produitRepository;
     @Autowired CommandeRepository commandeRepository;
     @Autowired LigneCommandeRepository ligneCommandeRepository;
+    @Autowired UtilisateurRepository utilisateurRepository;
 
     // ── GET All ───────────────────────────────────────────────────────────────
     @GetMapping("")
@@ -56,8 +57,28 @@ public class DevisController {
     public ResponseEntity<?> creerDevis(@RequestBody Map<String, Object> body) {
         try {
             Long clientId = Long.valueOf(body.get("clientId").toString());
-            Client client = clientRepository.findById(clientId)
-                    .orElseThrow(() -> new RuntimeException("Client introuvable"));
+
+            // Cherche d'abord dans la table clients
+            Client client = clientRepository.findById(clientId).orElse(null);
+
+            // Si pas trouvé → cherche dans utilisateurs (ROLE_CLIENT) et auto-crée le Client
+            if (client == null) {
+                Utilisateur u = utilisateurRepository.findById(clientId)
+                    .filter(usr -> usr.getRole() == Role.CLIENT)
+                    .orElseThrow(() -> new RuntimeException("Client introuvable avec id: " + clientId));
+
+                client = clientRepository.findByEmail(u.getEmail()).orElseGet(() -> {
+                    String nomClient = (u.getNom() != null && !u.getNom().isBlank())
+                        ? u.getNom()
+                        : (u.getSociete() != null && !u.getSociete().isBlank() ? u.getSociete() : u.getNomUtilisateur());
+                    return clientRepository.save(Client.builder()
+                        .nom(nomClient)
+                        .email(u.getEmail())
+                        .telephone(u.getTelephone())
+                        .adresse(u.getAdresse())
+                        .build());
+                });
+            }
 
             // Numéro unique
             String numero = "DEV-" + DateTimeFormatter.ofPattern("yyyyMMdd").format(LocalDateTime.now())
@@ -132,7 +153,7 @@ public class DevisController {
         return devisRepository.findById(id)
                 .map(devis -> {
                     String s = body.get("statut");
-                    if (!List.of("BROUILLON", "ENVOYE", "ACCEPTE", "REFUSE").contains(s)) {
+                    if (!List.of("DEMANDE_CLIENT", "BROUILLON", "ENVOYE", "ACCEPTE", "REFUSE").contains(s)) {
                         return ResponseEntity.badRequest().body("Statut invalide : " + s);
                     }
                     devis.setStatut(s);

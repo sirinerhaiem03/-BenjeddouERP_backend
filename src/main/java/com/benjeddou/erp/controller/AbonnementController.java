@@ -13,6 +13,8 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
 
+import org.springframework.transaction.annotation.Transactional;
+
 /**
  * Gestion des souscriptions et abonnements.
  *  - Client : soumettre une demande d'abonnement, voir son abonnement
@@ -21,6 +23,7 @@ import java.util.*;
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
 @RequestMapping("/api/abonnement")
+@Transactional(readOnly = true)
 public class AbonnementController {
 
     @Autowired
@@ -102,6 +105,7 @@ public class AbonnementController {
 
     /** Client soumet une demande d'abonnement */
     @PostMapping("/souscrire")
+    @Transactional
     public ResponseEntity<?> souscrire(@RequestBody Map<String, String> body) {
         Long clientId = Long.valueOf(body.get("clientId"));
         String typePlanStr = body.get("typePlan");
@@ -183,21 +187,37 @@ public class AbonnementController {
     /** Admin : liste tous les abonnements */
     @GetMapping("/admin/tous")
     public ResponseEntity<?> tousLesAbonnements() {
-        List<Abonnement> all = abonnementRepository.findAllByOrderByDateSoumissionDesc();
-        List<Map<String, Object>> result = all.stream().map(this::buildAbonnementMap).toList();
-        return ResponseEntity.ok(result);
+        try {
+            List<Abonnement> all = abonnementRepository.findAllByOrderByDateSoumissionDesc();
+            if (all == null) all = Collections.emptyList();
+            List<Map<String, Object>> result = all.stream()
+                .filter(Objects::nonNull)
+                .map(this::buildAbonnementMap)
+                .toList();
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.ok(Collections.emptyList());
+        }
     }
 
     /** Admin : liste les abonnements EN_ATTENTE */
     @GetMapping("/admin/en-attente")
     public ResponseEntity<?> enAttente() {
-        List<Abonnement> list = abonnementRepository
-            .findByStatutOrderByDateSoumissionDesc(StatutAbonnement.EN_ATTENTE);
-        return ResponseEntity.ok(list.stream().map(this::buildAbonnementMap).toList());
+        try {
+            List<Abonnement> list = abonnementRepository
+                .findByStatutOrderByDateSoumissionDesc(StatutAbonnement.EN_ATTENTE);
+            if (list == null) list = Collections.emptyList();
+            return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.ok(Collections.emptyList());
+        }
     }
 
     /** Admin : valider ou refuser un abonnement et activer le compte */
     @PutMapping("/admin/{id}/decider")
+    @Transactional
     public ResponseEntity<?> decider(
             @PathVariable Long id,
             @RequestParam String decision,
@@ -212,26 +232,30 @@ public class AbonnementController {
             case "VALIDER" -> {
                 ab.setStatut(StatutAbonnement.ACTIF);
                 ab.setDateDebut(LocalDateTime.now());
-                ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois()));
+                ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois() > 0 ? ab.getDureeMois() : 1));
                 ab.setNotesAdmin(notes);
 
                 // Activer le compte client
                 Utilisateur client = ab.getClient();
-                client.setStatutCompte(StatutCompte.ACTIF);
-                client.setActif(true);
-                client.setModeTrial(false);
-                client.setNbUtilisations(0);
-                utilisateurRepository.save(client);
+                if (client != null) {
+                    client.setStatutCompte(StatutCompte.ACTIF);
+                    client.setActif(true);
+                    client.setModeTrial(false);
+                    client.setNbUtilisations(0);
+                    utilisateurRepository.save(client);
+                }
                 abonnementRepository.save(ab);
 
                 // ── Notifier le client par email ──
-                String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
-                emailService.envoyerNotificationActivationCompte(
-                    client.getEmail(),
-                    client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
-                    ab.getTypePlan().name(),
-                    dateFin
-                );
+                if (client != null && client.getEmail() != null) {
+                    String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
+                    emailService.envoyerNotificationActivationCompte(
+                        client.getEmail(),
+                        client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
+                        ab.getTypePlan() != null ? ab.getTypePlan().name() : "MENSUEL",
+                        dateFin
+                    );
+                }
 
                 return ResponseEntity.ok(new MessageReponse(
                     "Abonnement validé. Compte client activé avec succès."));
@@ -256,29 +280,37 @@ public class AbonnementController {
         if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
         List<Abonnement> list = abonnementRepository
             .findByClientOrderByDateSoumissionDesc(userOpt.get());
-        return ResponseEntity.ok(list.stream().map(this::buildAbonnementMap).toList());
+        if (list == null) list = Collections.emptyList();
+        return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
     }
 
     // ── Helpers ──────────────────────────────────────────────────
     private Map<String, Object> buildAbonnementMap(Abonnement a) {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id",               a.getId());
-        m.put("typePlan",         a.getTypePlan().name());
-        m.put("prix",             a.getPrix());
-        m.put("dureeMois",        a.getDureeMois());
-        m.put("statut",           a.getStatut().name());
-        m.put("methodePaiement",  a.getMethodePaiement() != null ? a.getMethodePaiement() : "");
-        m.put("referencePaiement",a.getReferencePaiement() != null ? a.getReferencePaiement() : "");
-        m.put("dateDebut",        a.getDateDebut() != null ? a.getDateDebut().toString() : null);
-        m.put("dateFin",          a.getDateFin()   != null ? a.getDateFin().toString()   : null);
-        m.put("dateSoumission",   a.getDateSoumission() != null ? a.getDateSoumission().toString() : "");
-        m.put("notesAdmin",       a.getNotesAdmin() != null ? a.getNotesAdmin() : "");
+        m.put("id",                a.getId());
+        m.put("typePlan",          a.getTypePlan() != null ? a.getTypePlan().name() : "MENSUEL");
+        m.put("prix",              a.getPrix() != null ? a.getPrix() : BigDecimal.ZERO);
+        m.put("dureeMois",         a.getDureeMois());
+        m.put("statut",            a.getStatut() != null ? a.getStatut().name() : "EN_ATTENTE");
+        m.put("methodePaiement",   a.getMethodePaiement() != null ? a.getMethodePaiement() : "");
+        m.put("referencePaiement", a.getReferencePaiement() != null ? a.getReferencePaiement() : "");
+        m.put("dateDebut",         a.getDateDebut() != null ? a.getDateDebut().toString() : null);
+        m.put("dateFin",           a.getDateFin()   != null ? a.getDateFin().toString()   : null);
+        m.put("dateSoumission",    a.getDateSoumission() != null ? a.getDateSoumission().toString() : "");
+        m.put("notesAdmin",        a.getNotesAdmin() != null ? a.getNotesAdmin() : "");
         // Info client
         Utilisateur c = a.getClient();
-        m.put("clientId",         c.getId());
-        m.put("clientNom",        (c.getPrenom() != null ? c.getPrenom() + " " : "") + (c.getNom() != null ? c.getNom() : ""));
-        m.put("clientEmail",      c.getEmail());
-        m.put("clientSociete",    c.getSociete() != null ? c.getSociete() : "");
+        if (c != null) {
+            m.put("clientId",      c.getId());
+            m.put("clientNom",     (c.getPrenom() != null ? c.getPrenom() + " " : "") + (c.getNom() != null ? c.getNom() : (c.getNomUtilisateur() != null ? c.getNomUtilisateur() : "")));
+            m.put("clientEmail",   c.getEmail() != null ? c.getEmail() : "");
+            m.put("clientSociete", c.getSociete() != null ? c.getSociete() : "");
+        } else {
+            m.put("clientId",      null);
+            m.put("clientNom",     "Client (Non renseigné)");
+            m.put("clientEmail",   "");
+            m.put("clientSociete", "");
+        }
         return m;
     }
 }

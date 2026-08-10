@@ -2,9 +2,16 @@ package com.benjeddou.erp.controller;
 
 import com.benjeddou.erp.model.*;
 import com.benjeddou.erp.repository.*;
+import com.benjeddou.erp.service.AuditService;
+import com.benjeddou.erp.model.AuditLog.ActionAudit;
+import com.benjeddou.erp.model.AuditLog.ResultatAudit;
+import com.benjeddou.erp.security.services.UserDetailsImpl;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -25,6 +32,15 @@ public class CommandeController {
     @Autowired ProduitRepository produitRepository;
     @Autowired FactureRepository factureRepository;
     @Autowired CodePromoRepository codePromoRepository;
+    @Autowired UtilisateurRepository utilisateurRepository;
+    @Autowired AuditService auditService;
+
+    /** Récupère l'utilisateur courant depuis le contexte de sécurité. */
+    private UserDetailsImpl currentUser() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof UserDetailsImpl u) return u;
+        return null;
+    }
 
     // ── GET All ──────────────────────────────────────────────────────────────
     @GetMapping("")
@@ -53,11 +69,32 @@ public class CommandeController {
     // Body: { clientId, lignes: [{produitId, quantite, remise}] }
     @PostMapping("")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL')")
-    public ResponseEntity<?> creerCommande(@RequestBody Map<String, Object> body) {
+    public ResponseEntity<?> creerCommande(@RequestBody Map<String, Object> body, HttpServletRequest request) {
         try {
             Long clientId = Long.valueOf(body.get("clientId").toString());
-            Client client = clientRepository.findById(clientId)
-                    .orElseThrow(() -> new RuntimeException("Client introuvable"));
+
+            // Cherche d'abord dans la table clients
+            Client client = clientRepository.findById(clientId).orElse(null);
+
+            // Si pas trouvé → cherche dans utilisateurs (ROLE_CLIENT) et auto-crée le Client
+            if (client == null) {
+                Utilisateur u = utilisateurRepository.findById(clientId)
+                    .filter(usr -> usr.getRole() == Role.CLIENT)
+                    .orElseThrow(() -> new RuntimeException("Client introuvable avec id: " + clientId));
+
+                // Cherche ou crée la fiche Client par email
+                client = clientRepository.findByEmail(u.getEmail()).orElseGet(() -> {
+                    String nomClient = (u.getNom() != null && !u.getNom().isBlank())
+                        ? u.getNom()
+                        : (u.getSociete() != null && !u.getSociete().isBlank() ? u.getSociete() : u.getNomUtilisateur());
+                    return clientRepository.save(Client.builder()
+                        .nom(nomClient)
+                        .email(u.getEmail())
+                        .telephone(u.getTelephone())
+                        .adresse(u.getAdresse())
+                        .build());
+                });
+            }
 
             // Générer numéro commande unique
             String numero = "CMD-" + DateTimeFormatter.ofPattern("yyyyMMdd").format(LocalDateTime.now())
@@ -126,7 +163,7 @@ public class CommandeController {
             }
             commandeRepository.save(commande);
 
-            // ── Génération automatique de la facture ──────────────────
+            // ── Génération automatique de la facture ──────────────────────────
             String numeroFacture = "FAC-"
                     + DateTimeFormatter.ofPattern("yyyyMMdd").format(LocalDateTime.now())
                     + "-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
@@ -148,6 +185,17 @@ public class CommandeController {
             factureRepository.save(facture);
             // ─────────────────────────────────────────────────────────
 
+            // ── Audit log ────────────────────────────────────────────────
+            UserDetailsImpl cu = currentUser();
+            auditService.log(ActionAudit.COMMANDE_CREEE, ResultatAudit.SUCCES,
+                "Commande créée : " + commande.getNumeroCommande()
+                + " | Client ID : " + clientId
+                + " | Total TTC : " + montantTtc
+                + (codePromoUtilise != null ? " | Promo : " + codePromoUtilise : ""),
+                cu != null ? cu.getId() : null,
+                cu != null ? cu.getUsername() : "system",
+                request, "COMMANDES", commande.getId());
+
             return ResponseEntity.ok(Map.of(
                 "commande", commande,
                 "facture",  facture,
@@ -161,15 +209,25 @@ public class CommandeController {
     // ── PUT Statut ────────────────────────────────────────────────────────────
     @PutMapping("/{id}/statut")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL')")
-    public ResponseEntity<?> changerStatut(@PathVariable Long id, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> changerStatut(@PathVariable Long id, @RequestBody Map<String, String> body,
+                                           HttpServletRequest request) {
         return commandeRepository.findById(id)
                 .map(commande -> {
                     String nouveauStatut = body.get("statut");
                     if (!List.of("EN_ATTENTE", "PAYEE", "ANNULEE").contains(nouveauStatut)) {
                         return ResponseEntity.badRequest().body("Statut invalide : " + nouveauStatut);
                     }
+                    String ancienStatut = commande.getStatut();
                     commande.setStatut(nouveauStatut);
-                    return ResponseEntity.ok(commandeRepository.save(commande));
+                    commandeRepository.save(commande);
+                    UserDetailsImpl cu = currentUser();
+                    auditService.log(ActionAudit.STATUT_MODIFIE, ResultatAudit.SUCCES,
+                        "Statut commande " + commande.getNumeroCommande()
+                        + " : " + ancienStatut + " → " + nouveauStatut,
+                        cu != null ? cu.getId() : null,
+                        cu != null ? cu.getUsername() : "system",
+                        request, "COMMANDES", commande.getId());
+                    return ResponseEntity.ok(commande);
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -177,13 +235,19 @@ public class CommandeController {
     // ── DELETE ────────────────────────────────────────────────────────────────
     @DeleteMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL')")
-    public ResponseEntity<?> supprimerCommande(@PathVariable Long id) {
+    public ResponseEntity<?> supprimerCommande(@PathVariable Long id, HttpServletRequest request) {
         return commandeRepository.findById(id)
                 .map(commande -> {
-                    // Supprimer les lignes d'abord
                     List<LigneCommande> lignes = ligneCommandeRepository.findByCommandeId(id);
                     ligneCommandeRepository.deleteAll(lignes);
+                    String numero = commande.getNumeroCommande();
                     commandeRepository.delete(commande);
+                    UserDetailsImpl cu = currentUser();
+                    auditService.log(ActionAudit.COMMANDE_SUPPRIMEE, ResultatAudit.SUCCES,
+                        "Commande supprimée : " + numero,
+                        cu != null ? cu.getId() : null,
+                        cu != null ? cu.getUsername() : "system",
+                        request, "COMMANDES", id);
                     return ResponseEntity.ok().body("Commande supprimée avec succès !");
                 })
                 .orElse(ResponseEntity.notFound().build());

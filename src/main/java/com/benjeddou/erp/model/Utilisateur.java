@@ -89,6 +89,11 @@ public class Utilisateur {
     @Column(name = "token_session", length = 512)
     private String tokenSession;
 
+    /** Si true, l'utilisateur doit changer son mot de passe à la prochaine connexion */
+    @Column(name = "doit_changer_mot_de_passe")
+    @Builder.Default
+    private Boolean doitChangerMotDePasse = false;
+
     // ── Champs spécifiques Client ─────────────────────────────────
 
     /** Numéro de téléphone (utilisé pour OTP) */
@@ -107,4 +112,30 @@ public class Utilisateur {
     @Column(name = "kyc_soumis")
     @Builder.Default
     private Boolean kycSoumis = false;
+
+    // ── J3 : Période d'essai basée sur la date ────────────────────
+
+    /** Date d'expiration de la période d'essai (30 jours après création) */
+    @Column(name = "trial_expires_at")
+    private LocalDateTime trialExpiresAt;
+
+    // ── Multi-Tenant : Isolation par entreprise ───────────────────────────────
+
+    /**
+     * Identifiant de l'entreprise (tenant) à laquelle cet utilisateur appartient.
+     * Correspond à l'ID dans la table `entreprises` de la base master.
+     * Null pour les SuperAdmin (pas de base tenant dédiée).
+     *
+     * Permet de retrouver le schéma MySQL de l'utilisateur via EntrepriseRepository.
+     */
+    @Column(name = "entreprise_id")
+    private Long entrepriseId;
+
+    /**
+     * Nom du schéma MySQL de l'entreprise (cache local pour éviter une requête supplémentaire).
+     * Ex: "erp_ent_00001"
+     * Null pour les SuperAdmin.
+     */
+    @Column(name = "entreprise_schema", length = 100)
+    private String entrepriseSchema;
 }
