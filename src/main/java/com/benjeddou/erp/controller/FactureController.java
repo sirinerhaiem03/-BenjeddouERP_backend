@@ -44,6 +44,9 @@ public class FactureController {
         return null;
     }
 
+    @Autowired
+    com.benjeddou.erp.repository.LigneCommandeRepository ligneCommandeRepository;
+
     @GetMapping("")
     @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL') or hasRole('COMPTABLE')")
     public List<Facture> getToutesLesFactures() {
@@ -56,6 +59,15 @@ public class FactureController {
         return factureRepository.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/{id}/lignes")
+    @PreAuthorize("hasRole('ADMIN') or hasRole('COMMERCIAL') or hasRole('COMPTABLE')")
+    public List<com.benjeddou.erp.model.LigneCommande> getLignesFacture(@PathVariable Long id) {
+        return factureRepository.findById(id)
+                .filter(f -> f.getCommande() != null)
+                .map(f -> ligneCommandeRepository.findByCommandeId(f.getCommande().getId()))
+                .orElse(List.of());
     }
 
     @PutMapping("/{id}/statut")

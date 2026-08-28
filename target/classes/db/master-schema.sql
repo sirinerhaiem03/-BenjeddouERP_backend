@@ -225,3 +225,20 @@ CREATE TABLE IF NOT EXISTS `codes_promo` (
     `date_modification`      DATETIME      NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ─────────────────────────────────────────────────────────────
+-- TABLE : documents_kyc (SuperAdmin / KYC verification)
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS documents_kyc (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    utilisateur_id      BIGINT       NOT NULL,
+    type_document       VARCHAR(50)  NULL,
+    nom_fichier         VARCHAR(255) NULL,
+    content_type        VARCHAR(100) NULL,
+    contenu_fichier     LONGBLOB     NULL,
+    statut_verification VARCHAR(20)  DEFAULT 'EN_ATTENTE',
+    date_soumission     DATETIME     NULL,
+    commentaire_admin   VARCHAR(500) NULL,
+    CONSTRAINT fk_dk_user FOREIGN KEY (utilisateur_id) REFERENCES utilisateurs(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+

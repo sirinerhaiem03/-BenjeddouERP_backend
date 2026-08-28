@@ -1,5 +1,7 @@
 package com.benjeddou.erp.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
@@ -11,6 +13,7 @@ import java.math.BigDecimal;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class LigneCommande {
 
     @Id
@@ -33,5 +36,6 @@ public class LigneCommande {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "commande_id", nullable = false)
+    @JsonIgnore
     private Commande commande;
 }

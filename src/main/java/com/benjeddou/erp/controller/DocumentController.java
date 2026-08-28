@@ -31,7 +31,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/documents")
-@RequiredArgsConstructor
 @Slf4j
 @CrossOrigin(origins = "*")
 public class DocumentController {
@@ -41,6 +40,19 @@ public class DocumentController {
     private final OcrDocumentService ocrService;
     private final DocumentVersionService versionService;
     private final SignatureService signatureService;
+
+    public DocumentController(
+            ModeleDocumentService modeleService,
+            GenerationDocumentService generationService,
+            OcrDocumentService ocrService,
+            DocumentVersionService versionService,
+            SignatureService signatureService) {
+        this.modeleService = modeleService;
+        this.generationService = generationService;
+        this.ocrService = ocrService;
+        this.versionService = versionService;
+        this.signatureService = signatureService;
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // MODÈLES DE DOCUMENTS
@@ -284,6 +296,32 @@ public class DocumentController {
         } catch (Exception e) {
             log.error("Erreur OCR PDF : {}", e.getMessage());
             return ResponseEntity.internalServerError().body(Map.of("erreur", e.getMessage()));
+        }
+    }
+
+    /**
+     * OCR et Conversion Intelligente Universelle (Image ou PDF) vers Word (.docx) Éditable.
+     * Conserve les titres, la structure, les paragraphes, les tableaux et les images.
+     */
+    @PostMapping(value = "/convertir-vers-word", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<byte[]> convertirVersWord(
+            @RequestParam("fichier") MultipartFile fichier,
+            @RequestParam(value = "langue", defaultValue = "fr") String langue,
+            @RequestParam(value = "preserverTableaux", defaultValue = "true") boolean preserverTableaux,
+            @RequestParam(value = "preserverImages", defaultValue = "true") boolean preserverImages) {
+        try {
+            byte[] docxBytes = ocrService.convertirDocumentVersWordComplet(
+                    fichier, langue, preserverTableaux, preserverImages
+            );
+            String filename = "converti_" + (fichier.getOriginalFilename() != null ?
+                    fichier.getOriginalFilename().replaceAll("\\.[^.]+$", "") : "document") + ".docx";
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                    .body(docxBytes);
+        } catch (Exception e) {
+            log.error("Erreur conversion document vers Word : {}", e.getMessage());
+            return ResponseEntity.internalServerError().build();
         }
     }
 

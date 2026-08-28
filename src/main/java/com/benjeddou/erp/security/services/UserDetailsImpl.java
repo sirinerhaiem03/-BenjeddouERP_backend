@@ -24,11 +24,14 @@ public class UserDetailsImpl implements UserDetails {
     private String nom;
     private String languePreferee;
     private Boolean actif;
+    private Long entrepriseId;
+    private String entrepriseSchema;
 
     private Collection<? extends GrantedAuthority> authorities;
 
     public UserDetailsImpl(Long id, String nomUtilisateur, String email, String motDePasse, 
                            String prenom, String nom, String languePreferee, Boolean actif,
+                           Long entrepriseId, String entrepriseSchema,
                            Collection<? extends GrantedAuthority> authorities) {
         this.id = id;
         this.nomUtilisateur = nomUtilisateur;
@@ -38,6 +41,8 @@ public class UserDetailsImpl implements UserDetails {
         this.nom = nom;
         this.languePreferee = languePreferee;
         this.actif = actif;
+        this.entrepriseId = entrepriseId;
+        this.entrepriseSchema = entrepriseSchema;
         this.authorities = authorities;
     }
 
@@ -56,6 +61,8 @@ public class UserDetailsImpl implements UserDetails {
                 utilisateur.getNom(),
                 utilisateur.getLanguePreferee(),
                 utilisateur.getActif(),
+                utilisateur.getEntrepriseId(),
+                utilisateur.getEntrepriseSchema(),
                 authorities
         );
     }
@@ -83,6 +90,14 @@ public class UserDetailsImpl implements UserDetails {
 
     public String getLanguePreferee() {
         return languePreferee;
+    }
+
+    public Long getEntrepriseId() {
+        return entrepriseId;
+    }
+
+    public String getEntrepriseSchema() {
+        return entrepriseSchema;
     }
 
     @Override

@@ -1,19 +1,19 @@
 package com.benjeddou.erp.service;
 
-import com.benjeddou.erp.config.MasterTenantContext;
 import com.benjeddou.erp.model.*;
 import com.benjeddou.erp.model.CalculMoteur.TypeCalcul;
 import com.benjeddou.erp.repository.*;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.sql.DataSource;
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.math.RoundingMode;
+import java.sql.*;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -30,7 +30,6 @@ import java.util.Optional;
  * Arrondi : 2 décimales (RoundingMode.HALF_UP — standard comptable)
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class MoteurCalculService {
 
@@ -38,10 +37,62 @@ public class MoteurCalculService {
     private static final int ECHELLE_RESULTAT = 2;
     private static final RoundingMode ARRONDI = RoundingMode.HALF_UP;
 
-    private final PeriodeTauxRepository periodeTauxRepository;
     private final CalculMoteurRepository calculMoteurRepository;
     private final LigneCalculRepository ligneCalculRepository;
     private final UtilisateurRepository utilisateurRepository;
+    private final DataSource masterDataSource;
+
+    public MoteurCalculService(
+            CalculMoteurRepository calculMoteurRepository,
+            LigneCalculRepository ligneCalculRepository,
+            UtilisateurRepository utilisateurRepository,
+            @Qualifier("masterDataSource") DataSource masterDataSource) {
+        this.calculMoteurRepository = calculMoteurRepository;
+        this.ligneCalculRepository = ligneCalculRepository;
+        this.utilisateurRepository = utilisateurRepository;
+        this.masterDataSource = masterDataSource;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // LECTURE DES PÉRIODES DEPUIS LA BASE CENTRALE — JDBC DIRECT
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Récupère les périodes actives depuis benjeddou_erp.periodes_taux via JDBC direct.
+     * → Exclut les doublons grâce à une requête native directe sur masterDataSource.
+     * → Ne crée, ne modifie ni ne supprime AUCUNE période.
+     */
+    private List<PeriodeTaux> lirePeriodesDepuisMaster(LocalDate dateDebut, LocalDate dateFin) {
+        String sql = "SELECT id, date_debut, date_fin, taux, libelle, actif " +
+                     "FROM periodes_taux " +
+                     "WHERE actif = TRUE " +
+                     "AND date_debut <= ? AND date_fin >= ? " +
+                     "ORDER BY date_debut ASC";
+        List<PeriodeTaux> periodes = new ArrayList<>();
+        try (Connection conn = masterDataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setDate(1, Date.valueOf(dateFin));
+            ps.setDate(2, Date.valueOf(dateDebut));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    PeriodeTaux p = new PeriodeTaux();
+                    p.setId(rs.getLong("id"));
+                    p.setDateDebut(rs.getDate("date_debut").toLocalDate());
+                    p.setDateFin(rs.getDate("date_fin").toLocalDate());
+                    p.setTaux(rs.getBigDecimal("taux"));
+                    p.setLibelle(rs.getString("libelle"));
+                    p.setActif(rs.getBoolean("actif"));
+                    periodes.add(p);
+                }
+            }
+        } catch (SQLException e) {
+            log.error("[MoteurCalcul] Erreur lecture periodes_taux depuis masterDataSource : {}", e.getMessage());
+            throw new IllegalStateException("Impossible de lire les périodes de référence : " + e.getMessage());
+        }
+        log.info("[MoteurCalcul] {} période(s) actives trouvée(s) dans benjeddou_erp pour [{} → {}]",
+                 periodes.size(), dateDebut, dateFin);
+        return periodes;
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // MODE 1 — TAUX UNIQUE
@@ -107,14 +158,13 @@ public class MoteurCalculService {
     public CalculMoteur calculerTauxVariables(BigDecimal montant, LocalDate dateDebut,
             LocalDate dateFin, String moduleErp, String libelle, Long userId) {
 
-        // Lire les taux depuis la BASE CENTRALE (benjeddou_erp) — partagée entre tous les tenants
-        List<PeriodeTaux> periodesApplicables = MasterTenantContext.run(() ->
-                periodeTauxRepository.findPeriodesApplicables(dateDebut, dateFin));
+        // Lire les périodes EXCLUSIVEMENT depuis benjeddou_erp via JDBC direct — sans JPA/tenant routing
+        List<PeriodeTaux> periodesApplicables = lirePeriodesDepuisMaster(dateDebut, dateFin);
 
         if (periodesApplicables.isEmpty()) {
             throw new IllegalStateException(
                 "Aucune période avec taux définie pour la plage " + dateDebut + " → " + dateFin +
-                ". Veuillez configurer les périodes dans l'interface d'administration."
+                ". Veuillez configurer les périodes dans l'interface d'administration (SuperAdmin)."
             );
         }
 
@@ -188,9 +238,8 @@ public class MoteurCalculService {
     public List<LigneCalcul> simulerTauxVariables(BigDecimal montant,
             LocalDate dateDebut, LocalDate dateFin) {
 
-        // Lire les taux depuis la BASE CENTRALE pour la simulation
-        List<PeriodeTaux> periodesApplicables = MasterTenantContext.run(() ->
-                periodeTauxRepository.findPeriodesApplicables(dateDebut, dateFin));
+        // Lire les périodes EXCLUSIVEMENT depuis benjeddou_erp via JDBC direct
+        List<PeriodeTaux> periodesApplicables = lirePeriodesDepuisMaster(dateDebut, dateFin);
 
         List<LigneCalcul> lignes = new ArrayList<>();
         int numeroLigne = 1;
@@ -330,9 +379,8 @@ public class MoteurCalculService {
         return String.format("CM-%s-%04d", dateStr, seq);
     }
 
-    /** Récupère les périodes actives applicables depuis la base centrale */
+    /** Récupère les périodes actives applicables depuis la base centrale (JDBC direct) */
     public List<PeriodeTaux> getPeriodesApplicables(LocalDate debut, LocalDate fin) {
-        return MasterTenantContext.run(() ->
-                periodeTauxRepository.findPeriodesApplicables(debut, fin));
+        return lirePeriodesDepuisMaster(debut, fin);
     }
 }

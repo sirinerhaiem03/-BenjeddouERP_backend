@@ -14,6 +14,9 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -142,6 +145,35 @@ public class EntrepriseController {
             admin.setEntrepriseSchema(entreprise.getSchemaName());
             utilisateurRepository.save(admin);
             log.info("✓ Lien admin {} ↔ entreprise {} établi", nomUtilisateur, entreprise.getSchemaName());
+
+            // ÉTAPE 4 : Insérer l'admin AUSSI dans la base tenant (source de vérité pour l'authentification)
+            // Sans cette étape, l'authentification multi-tenant échoue car le hash BCrypt
+            // n'existe que dans la base Master et pas dans la base Tenant.
+            try {
+                String tenantDbUrl = entreprise.getDbUrl();
+                String tenantDbUser = entreprise.getDbUsername();
+                String tenantDbPass = entreprise.getDbPassword() != null ? entreprise.getDbPassword() : "";
+                if (tenantDbUrl != null && !tenantDbUrl.isBlank()) {
+                    String sqlInsertAdmin = """
+                        INSERT IGNORE INTO utilisateurs
+                            (nom_utilisateur, email, mot_de_passe, prenom, nom,
+                             actif, role, langue_preferee, statut_compte, doit_changer_mot_de_passe)
+                        VALUES (?, ?, ?, ?, ?, TRUE, 'ADMIN', 'fr', 'ACTIF', FALSE)
+                        """;
+                    try (Connection conn = DriverManager.getConnection(tenantDbUrl, tenantDbUser, tenantDbPass);
+                         PreparedStatement ps = conn.prepareStatement(sqlInsertAdmin)) {
+                        ps.setString(1, nomUtilisateur);
+                        ps.setString(2, email);
+                        ps.setString(3, admin.getMotDePasse()); // même hash BCrypt que dans Master
+                        ps.setString(4, prenom != null ? prenom : "");
+                        ps.setString(5, nom != null ? nom : "");
+                        ps.executeUpdate();
+                        log.info("✓ Admin '{}' inséré dans la base tenant '{}'", nomUtilisateur, entreprise.getSchemaName());
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn("⚠️  Insertion admin dans tenant ignorée : {}", ex.getMessage());
+            }
 
             // Réponse succès
             Map<String, Object> resp = new LinkedHashMap<>();

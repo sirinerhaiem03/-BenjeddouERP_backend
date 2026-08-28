@@ -18,6 +18,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -434,6 +437,70 @@ public class SuperadminController {
                 reinitialises++;
             }
             utilisateurRepository.save(user);
+
+            // SYNCHRONISATION TENANT : Mettre à jour aussi la base MySQL du tenant
+            // C'est LA source de vérité utilisée par l'authentification multi-tenant.
+            if (user.getEntrepriseSchema() != null && !user.getEntrepriseSchema().isBlank()) {
+                final String schema = user.getEntrepriseSchema();
+                final String hashFinal = hash;
+                final String loginFinal = c.nomUtilisateur();
+                entrepriseRepository.findBySchemaName(schema).ifPresent(ent -> {
+                    String tenantUrl = ent.getDbUrl();
+                    String tenantDbUser = ent.getDbUsername();
+                    String tenantDbPass = ent.getDbPassword() != null ? ent.getDbPassword() : "";
+                    if (tenantUrl != null && !tenantUrl.isBlank()) {
+                        try {
+                            // UPDATE si existe, INSERT si nouveau
+                            String sqlUpsert = """
+                                INSERT INTO utilisateurs (nom_utilisateur, email, mot_de_passe, prenom, nom, actif, role, langue_preferee, statut_compte, doit_changer_mot_de_passe)
+                                VALUES (?, ?, ?, ?, ?, TRUE, ?, 'fr', 'ACTIF', FALSE)
+                                ON DUPLICATE KEY UPDATE mot_de_passe = VALUES(mot_de_passe), actif = TRUE, statut_compte = 'ACTIF', doit_changer_mot_de_passe = FALSE
+                                """;
+                            try (Connection conn = DriverManager.getConnection(tenantUrl, tenantDbUser, tenantDbPass);
+                                 PreparedStatement ps = conn.prepareStatement(sqlUpsert)) {
+                                ps.setString(1, loginFinal);
+                                ps.setString(2, c.email());
+                                ps.setString(3, hashFinal);
+                                ps.setString(4, c.prenom());
+                                ps.setString(5, c.nom());
+                                ps.setString(6, c.role().name());
+                                ps.executeUpdate();
+                            }
+                        } catch (Exception ex) {
+                            // Non bloquant — log uniquement
+                        }
+                    }
+                });
+            } else {
+                // Comptes sans tenant (ex: superadmin) -> sync uniquement master (déjà fait)
+                // Pour les comptes démo (admin, commercial...) dans erp_ent_00000
+                // on synchronise via la base tenant par défaut
+                try {
+                    final String hashFinal = hash;
+                    final String loginFinal = c.nomUtilisateur();
+                    String tenantUrl = System.getProperty("tenant.default.url",
+                        "jdbc:mysql://localhost:3306/erp_ent_00000?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true");
+                    String tenantDbUser = System.getProperty("tenant.default.username", "root");
+                    String tenantDbPass = System.getProperty("tenant.default.password", "");
+                    String sqlUpsert = """
+                        INSERT INTO utilisateurs (nom_utilisateur, email, mot_de_passe, prenom, nom, actif, role, langue_preferee, statut_compte, doit_changer_mot_de_passe)
+                        VALUES (?, ?, ?, ?, ?, TRUE, ?, 'fr', 'ACTIF', FALSE)
+                        ON DUPLICATE KEY UPDATE mot_de_passe = VALUES(mot_de_passe), actif = TRUE, statut_compte = 'ACTIF', doit_changer_mot_de_passe = FALSE
+                        """;
+                    try (Connection conn = DriverManager.getConnection(tenantUrl, tenantDbUser, tenantDbPass);
+                         PreparedStatement ps = conn.prepareStatement(sqlUpsert)) {
+                        ps.setString(1, loginFinal);
+                        ps.setString(2, c.email());
+                        ps.setString(3, hashFinal);
+                        ps.setString(4, c.prenom());
+                        ps.setString(5, c.nom());
+                        ps.setString(6, c.role().name());
+                        ps.executeUpdate();
+                    }
+                } catch (Exception ex) {
+                    // Non bloquant pour le superadmin
+                }
+            }
             resultats.add(Map.of(
                 "nomUtilisateur", c.nomUtilisateur(),
                 "role", c.role().name(),

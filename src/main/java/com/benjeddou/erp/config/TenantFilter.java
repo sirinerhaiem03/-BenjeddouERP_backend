@@ -67,59 +67,83 @@ public class TenantFilter implements Filter {
         HttpServletRequest httpRequest = (HttpServletRequest) request;
 
         try {
-            // ── Endpoints d'authentification → toujours base master ──────────
-            // Angular envoie le JWT même pour /api/auth/login, ce qui causerait
-            // un routing vers la base tenant. On court-circuite ici.
+            // ── Endpoints d'authentification publics → toujours base master ──────
+            // On court-circuite uniquement les endpoints qui n'ont pas besoin de tenant
+            // (login, inscription, récupération de mot de passe).
+            // ⚠️ /api/auth/refresh et /api/auth/logout ont besoin du contexte tenant
+            //    pour trouver les refresh_tokens dans la bonne base.
             String uri = httpRequest.getRequestURI();
-            if (uri.contains("/api/auth/")) {
+            boolean isPublicAuthEndpoint = uri.contains("/api/auth/login")
+                    || uri.contains("/api/auth/register")
+                    || uri.contains("/api/auth/inscription")
+                    || uri.contains("/api/auth/mot-de-passe")
+                    || uri.contains("/api/auth/reset")
+                    || uri.contains("/api/auth/verify")
+                    || uri.contains("/api/auth/otp");
+            if (isPublicAuthEndpoint) {
                 chain.doFilter(request, response);
                 return;
             }
 
             String jwt = parseJwt(httpRequest);
 
-            if (jwt != null && jwtUtils.validateJwtToken(jwt)) {
-                String username = jwtUtils.getUserNameFromJwtToken(jwt);
-
-                // Charge l'utilisateur depuis la BASE MASTER
-                // ⚠️ À ce stade, TenantContextHolder n'est PAS encore défini → base master utilisée
-                Optional<Utilisateur> userOpt = utilisateurRepository.findByNomUtilisateur(username);
-
-                if (userOpt.isPresent()) {
-                    Utilisateur user = userOpt.get();
-                    String schema = user.getEntrepriseSchema();
-
-                    if (schema != null && !schema.isBlank()) {
-                        // Vérifie que le DataSource est enregistré dans le pool
-                        if (!tenantDataSourceConfig.tenantExists(schema)) {
-                            // ► RECHARGEMENT DYNAMIQUE depuis la base master
-                            // Se produit après un redémarrage si le tenant n'était pas encore chargé
-                            log.info("DataSource absent pour '{}' — rechargement depuis la base master", schema);
-                            Optional<Entreprise> entrepriseOpt = entrepriseRepository.findBySchemaName(schema);
-                            if (entrepriseOpt.isPresent()) {
-                                Entreprise ent = entrepriseOpt.get();
-                                tenantDataSourceConfig.addTenantDataSource(
-                                    ent.getSchemaName(),
-                                    ent.getDbUrl(),
-                                    ent.getDbUsername(),
-                                    ent.getDbPassword()
-                                );
-                                TenantContextHolder.setCurrentTenant(schema);
-                                log.info("✓ Tenant '{}' rechargé dynamiquement pour '{}'", schema, username);
-                            } else {
-                                log.warn("⚠️ Tenant '{}' introuvable dans la base master — fallback sur master", schema);
-                                // Pas de tenant trouvé → base master utilisée (sécurité)
-                            }
-                        } else {
-                            // ✓ DataSource déjà en cache — routage normal
-                            TenantContextHolder.setCurrentTenant(schema);
-                            log.debug("Tenant défini : {} pour utilisateur '{}'", schema, username);
-                        }
-                    }
-                    // Si schema est null (SuperAdmin, utilisateurs legacy) → base master utilisée
+            // Pour les endpoints qui nécessitent le tenant (/refresh, /logout, etc.),
+            // on tente d'extraire le username même si le JWT est expiré.
+            // validateJwtToken() retourne false pour les tokens expirés, mais
+            // getUserNameFromExpiredOrValidToken() peut quand même lire le subject.
+            String username = null;
+            if (jwt != null) {
+                if (jwtUtils.validateJwtToken(jwt)) {
+                    username = jwtUtils.getUserNameFromJwtToken(jwt);
+                } else {
+                    // JWT invalide ou expiré — on tente quand même pour le routing tenant
+                    // (sera refusé par Spring Security si le token n'est pas valide)
+                    username = jwtUtils.getUserNameFromExpiredOrValidToken(jwt);
                 }
             }
-            // Si pas de JWT (requête publique) → base master par défaut
+
+            String schema = null;
+            if (jwt != null) {
+                schema = jwtUtils.getSchemaFromJwtToken(jwt);
+            }
+
+            if (schema != null && !schema.isBlank()) {
+                if (!tenantDataSourceConfig.tenantExists(schema)) {
+                    log.info("DataSource absent pour '{}' — rechargement depuis la base master", schema);
+                    Optional<Entreprise> entrepriseOpt = entrepriseRepository.findBySchemaName(schema);
+                    if (entrepriseOpt.isPresent()) {
+                        Entreprise ent = entrepriseOpt.get();
+                        tenantDataSourceConfig.addTenantDataSource(
+                            ent.getSchemaName(),
+                            ent.getDbUrl(),
+                            ent.getDbUsername(),
+                            ent.getDbPassword()
+                        );
+                        TenantContextHolder.setCurrentTenant(schema);
+                        log.info("✓ Tenant '{}' rechargé dynamiquement", schema);
+                    } else {
+                        log.warn("⚠️ Tenant '{}' introuvable dans la base master", schema);
+                    }
+                } else {
+                    TenantContextHolder.setCurrentTenant(schema);
+                    log.debug("Tenant défini depuis JWT : {}", schema);
+                }
+            } else if (username != null) {
+                // Fallback pour tokens sans claim schema : recherche master
+                Optional<Utilisateur> userOpt = utilisateurRepository.findByNomUtilisateur(username);
+                if (userOpt.isPresent()) {
+                    Utilisateur user = userOpt.get();
+                    String userSchema = user.getEntrepriseSchema();
+                    if (userSchema != null && !userSchema.isBlank()) {
+                        if (!tenantDataSourceConfig.tenantExists(userSchema)) {
+                            Optional<Entreprise> entrepriseOpt = entrepriseRepository.findBySchemaName(userSchema);
+                            entrepriseOpt.ifPresent(ent -> tenantDataSourceConfig.addTenantDataSource(
+                                ent.getSchemaName(), ent.getDbUrl(), ent.getDbUsername(), ent.getDbPassword()));
+                        }
+                        TenantContextHolder.setCurrentTenant(userSchema);
+                    }
+                }
+            }
 
             chain.doFilter(request, response);
 

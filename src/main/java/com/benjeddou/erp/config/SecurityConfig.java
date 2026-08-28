@@ -151,6 +151,12 @@ public class SecurityConfig {
                 .requestMatchers("/api/client/otp/**").permitAll()
                 .requestMatchers("/api/client/kyc/upload").permitAll()
                 .requestMatchers("/api/client/kyc/document/**").permitAll()
+                // Inscription Administrateur Entreprise (public, sans auth)
+                // Utilise /api/inscription-admin pour éviter le conflit avec AdminController (/api/admin @PreAuthorize)
+                .requestMatchers("/api/inscription-admin/register").permitAll()
+                .requestMatchers("/api/inscription-admin/otp/**").permitAll()
+                .requestMatchers("/api/inscription-admin/check-username").permitAll()
+                .requestMatchers("/api/inscription-admin/check-email").permitAll()
                 // Plans d'abonnement (page publique)
                 .requestMatchers("/api/abonnement/plans").permitAll()
                 // Theme global de la plateforme (charge par tous les users au demarrage)
@@ -158,6 +164,8 @@ public class SecurityConfig {
                 // Stripe (webhook signe cote controller, cle publique)
                 .requestMatchers("/api/stripe/webhook").permitAll()
                 .requestMatchers("/api/stripe/public-key").permitAll()
+                // Assistant IA
+                .requestMatchers("/api/ai/**").permitAll()
                 // Health check (monitoring)
                 .requestMatchers("/actuator/health").permitAll()
                 // Gestion des erreurs Spring

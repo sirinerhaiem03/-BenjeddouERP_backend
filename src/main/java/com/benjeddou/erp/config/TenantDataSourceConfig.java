@@ -101,9 +101,26 @@ public class TenantDataSourceConfig {
      */
     public synchronized void addTenantDataSource(String schemaName, String url,
                                                   String username, String password) {
+        // Si déjà enregistré avec les mêmes credentials → rien à faire
         if (targetDataSources.containsKey(schemaName)) {
-            log.debug("DataSource déjà enregistré pour : {}", schemaName);
-            return;
+            Object existing = targetDataSources.get(schemaName);
+            // Si le nouveau user est 'root' et l'ancien était erp_user_XXXXX → forcer le remplacement
+            boolean forceReplace = false;
+            if (existing instanceof HikariDataSource existingDs) {
+                String existingUser = existingDs.getUsername();
+                if (existingUser != null && existingUser.startsWith("erp_user_") && "root".equals(username)) {
+                    log.info("DataSource '{}' : remplacement erp_user → root (fix Aria)", schemaName);
+                    existingDs.close();  // fermer l'ancien pool corrompu
+                    forceReplace = true;
+                } else if (!existingDs.isClosed()) {
+                    log.debug("DataSource déjà enregistré pour : {}", schemaName);
+                    return;
+                }
+            }
+            if (!forceReplace) {
+                log.debug("DataSource déjà enregistré pour : {}", schemaName);
+                return;
+            }
         }
 
         try {
@@ -125,7 +142,7 @@ public class TenantDataSourceConfig {
             routingDataSource.setTargetDataSources(new HashMap<>(targetDataSources));
             routingDataSource.afterPropertiesSet();
 
-            log.info("✓ DataSource ajouté pour tenant '{}' → {}", schemaName, url);
+            log.info("✓ DataSource ajouté pour tenant '{}' → user={}", schemaName, username);
         } catch (Exception e) {
             log.error("✗ Impossible d'ajouter le DataSource pour '{}' : {}", schemaName, e.getMessage());
         }

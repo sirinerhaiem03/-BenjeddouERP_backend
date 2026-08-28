@@ -50,8 +50,8 @@ public class Entreprise {
     @Column(name = "db_username", length = 100)
     private String dbUsername;
 
-    /** Mot de passe MySQL — en production : chiffrer avec AES ou utiliser AWS Secrets Manager */
-    @Column(name = "db_password", length = 255)
+    /** Mot de passe MySQL — chiffré réversiblement en AES-256-GCM avec clé isolée par tenant */
+    @Column(name = "db_password", length = 500)
     private String dbPassword;
 
     /** ID de l'utilisateur administrateur principal de cette entreprise */

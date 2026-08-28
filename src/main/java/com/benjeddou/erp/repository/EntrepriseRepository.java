@@ -25,6 +25,9 @@ public interface EntrepriseRepository extends JpaRepository<Entreprise, Long> {
     /** Vérifie si un schéma existe déjà (pour éviter les doublons) */
     boolean existsBySchemaName(String schemaName);
 
-    /** Retrouve par email de contact */
-    Optional<Entreprise> findByEmailContact(String email);
+    /** Retrouve toutes les entreprises associées à un email de contact */
+    List<Entreprise> findByEmailContact(String email);
+
+    /** Retrouve la première entreprise active par email de contact */
+    Optional<Entreprise> findFirstByEmailContactOrderByIdDesc(String email);
 }

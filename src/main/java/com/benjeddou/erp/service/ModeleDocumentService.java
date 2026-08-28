@@ -23,13 +23,21 @@ import java.util.regex.Pattern;
  * Permet l'upload, l'extraction de placeholders, et le CRUD des modèles.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class ModeleDocumentService {
 
     private final ModeleDocumentRepository modeleRepository;
     private final UtilisateurRepository utilisateurRepository;
     private final ObjectMapper objectMapper;
+
+    public ModeleDocumentService(
+            ModeleDocumentRepository modeleRepository,
+            UtilisateurRepository utilisateurRepository,
+            ObjectMapper objectMapper) {
+        this.modeleRepository = modeleRepository;
+        this.utilisateurRepository = utilisateurRepository;
+        this.objectMapper = objectMapper;
+    }
 
     /** Regex pour détecter les placeholders {{champ}} dans le texte */
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{\\{([^}]+)\\}\\}");

@@ -10,6 +10,7 @@ import jakarta.mail.internet.MimeMessage;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -32,20 +33,27 @@ public class OtpService {
     private String fromEmail;
 
     /**
-     * Génère un OTP, le stocke, essaie de l'envoyer par email.
-     * @return null si email envoyé avec succès, le code si l'email a échoué (mode dév)
+     * Génère un OTP, le stocke en mémoire et tente l'envoi email en asynchrone.
+     * Retourne le code généré pour permettre la continuité en environnement local/dev.
+     * En cas d'échec SMTP, le code reste 100% valide en mémoire.
      */
     public String genererEtEnvoyer(String email, String prenom) {
         String code = String.format("%06d", random.nextInt(1_000_000));
         otpStore.put(email, new OtpEntry(code, Instant.now()));
-        try {
-            envoyerEmail(email, prenom, code);
-            return null; // Email envoyé avec succès
-        } catch (Exception e) {
-            // Email a échoué (SMTP indisponible) — on retourne le code pour le mode dév
-            System.err.println("[OtpService] ⚠️ Email non envoyé : " + e.getMessage());
-            return code; // Le code est quand même stocké en mémoire et valide
-        }
+
+        // Envoi ASYNCHRONE par email uniquement — code non affiché dans la console
+        CompletableFuture.runAsync(() -> {
+            try {
+                if (mailSender != null) {
+                    envoyerEmail(email, prenom, code);
+                    System.out.println("[OtpService] ✅ Email de vérification envoyé à : " + email);
+                }
+            } catch (Exception e) {
+                System.err.println("[OtpService] ⚠️ Erreur envoi email : " + e.getMessage());
+            }
+        });
+
+        return code;
     }
 
     // ─────────────────────────────────────────────

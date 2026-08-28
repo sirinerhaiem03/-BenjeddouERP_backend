@@ -10,8 +10,10 @@ import com.benjeddou.erp.service.AuditService;
 import com.benjeddou.erp.model.AuditLog.ActionAudit;
 import com.benjeddou.erp.model.AuditLog.ResultatAudit;
 import com.benjeddou.erp.service.EmailService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -19,6 +21,10 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import lombok.extern.slf4j.Slf4j;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -58,6 +64,19 @@ public class AdminController {
 
     @Autowired
     org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
+    @Autowired
+    com.benjeddou.erp.repository.EntrepriseRepository entrepriseRepository;
+
+    @Autowired
+    com.benjeddou.erp.repository.CommandeRepository commandeRepository;
+
+    @Autowired
+    com.benjeddou.erp.repository.DevisRepository devisRepository;
+
+    @Autowired
+    com.benjeddou.erp.repository.ProduitRepository produitRepository;
+
 
     // ── Créer un collaborateur interne ──────────────────────────
     @PostMapping("/users")
@@ -115,6 +134,50 @@ public class AdminController {
             .entrepriseSchema(entrepriseSchema) // ← même base MySQL
             .build();
         utilisateurRepository.save(user);
+
+        // SYNCHRONISATION TENANT : Insérer aussi dans la base MySQL du tenant
+        // Sans cela, l'authentification multi-tenant échoue car le hash BCrypt
+        // n'existe que dans la base Master (benjeddou_erp) et pas dans la base Tenant.
+        if (entrepriseSchema != null && !entrepriseSchema.isBlank()) {
+            // Copies final pour utilisation dans la lambda (exigence Java)
+            final String finalSchema         = entrepriseSchema;
+            final String finalNomUtilisateur = nomUtilisateur;
+            final String finalEmail          = email;
+            final String finalPrenom         = prenom != null ? prenom : "";
+            final String finalNom            = nom    != null ? nom    : "";
+            final String finalRole           = role.name();
+            final String finalHash           = user.getMotDePasse();
+
+            entrepriseRepository.findBySchemaName(finalSchema).ifPresent(ent -> {
+                final String tUrl  = ent.getDbUrl() != null ? ent.getDbUrl() : "";
+                final String tUser = ent.getDbUsername() != null ? ent.getDbUsername() : "";
+                final String tPass = ent.getDbPassword() != null ? ent.getDbPassword() : "";
+                if (!tUrl.isBlank()) {
+                    try {
+                        String sqlInsert = """
+                            INSERT IGNORE INTO utilisateurs
+                                (nom_utilisateur, email, mot_de_passe, prenom, nom,
+                                 actif, role, langue_preferee, statut_compte, doit_changer_mot_de_passe)
+                            VALUES (?, ?, ?, ?, ?, TRUE, ?, 'fr', 'ACTIF', TRUE)
+                            """;
+                        try (Connection conn = DriverManager.getConnection(tUrl, tUser, tPass);
+                             PreparedStatement ps = conn.prepareStatement(sqlInsert)) {
+                            ps.setString(1, finalNomUtilisateur);
+                            ps.setString(2, finalEmail);
+                            ps.setString(3, finalHash);
+                            ps.setString(4, finalPrenom);
+                            ps.setString(5, finalNom);
+                            ps.setString(6, finalRole);
+                            ps.executeUpdate();
+                            log.info("✓ Utilisateur '{}' synchronisé dans la base tenant '{}'", finalNomUtilisateur, finalSchema);
+                        }
+                    } catch (Exception ex) {
+                        log.warn("⚠️  Sync tenant ignorée pour '{}' : {}", finalNomUtilisateur, ex.getMessage());
+                    }
+                }
+            });
+        }
+
 
         // Audit log — création utilisateur
         auditService.log(ActionAudit.UTILISATEUR_CREE, ResultatAudit.SUCCES,
@@ -553,85 +616,238 @@ public class AdminController {
         return ResponseEntity.ok(resp);
     }
 
-    // ── Statistiques du Dashboard Admin ───────────────────────
+    // ── Statistiques du Dashboard Admin ───────────────────────────────
+    // Chaque admin voit les données de SON tenant (base isolée).
+    // Le routing est géré automatiquement par TenantFilter avant cet appel.
     @GetMapping("/dashboard/stats")
     @PreAuthorize("hasRole('ADMIN') or hasRole('SUPERADMIN')")
     public ResponseEntity<?> getDashboardStats() {
         Map<String, Object> stats = new HashMap<>();
-        
+
+        log.info("[DASHBOARD] Stats demandées, tenant actif: {}",
+            com.benjeddou.erp.config.TenantContextHolder.getCurrentTenant());
+
+        // ── KPIs utilisateurs ───────────────────────────────────────────────
         long totalUsers = utilisateurRepository.count();
         long activeUsers = utilisateurRepository.findAll().stream()
             .filter(u -> Boolean.TRUE.equals(u.getActif())).count();
-            
-        long totalTransactions = connexionLogRepository.count();
-        
-        long pendingKyc = documentKycRepository.findAll().stream()
-            .filter(d -> "EN_ATTENTE".equals(d.getStatutVerification())).count();
-            
-        List<Facture> factures = factureRepository.findByStatut("PAYEE");
-        java.math.BigDecimal totalRevenue = java.math.BigDecimal.ZERO;
-        for (Facture f : factures) {
-            if (f.getMontantTotal() != null) {
-                totalRevenue = totalRevenue.add(f.getMontantTotal());
-            }
-        }
-        
+
+        List<Utilisateur> users = utilisateurRepository.findAll();
+        // L'enum Role contient : ADMIN, COMMERCIAL, COMPTABLE, STOCK (sans préfixe ROLE_)
+        long countAdmin    = users.stream().filter(u -> Role.ADMIN.equals(u.getRole())).count();
+        long countCom      = users.stream().filter(u -> Role.COMMERCIAL.equals(u.getRole())).count();
+        long countComp     = users.stream().filter(u -> Role.COMPTABLE.equals(u.getRole())).count();
+        long countStock    = users.stream().filter(u -> Role.STOCK.equals(u.getRole())).count();
+        long countClient   = users.stream().filter(u -> Role.CLIENT.equals(u.getRole())).count();
+
+        // ── KPIs financiers ───────────────────────────────────────────────
+        List<Facture> facturesPayées;
+        try { facturesPayées = factureRepository.findByStatut("PAYEE"); }
+        catch (Exception e) { facturesPayées = new ArrayList<>(); }
+
+        java.math.BigDecimal totalRevenue = facturesPayées.stream()
+            .map(Facture::getMontantTotal)
+            .filter(Objects::nonNull)
+            .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+
+        long totalFactures;
+        long facturesAttente;
+        try {
+            totalFactures   = factureRepository.count();
+            facturesAttente = factureRepository.findAll().stream()
+                .filter(f -> "EN_ATTENTE".equals(f.getStatut())).count();
+        } catch (Exception e) { totalFactures = 0; facturesAttente = 0; }
+
+        // ── KPIs commercial ───────────────────────────────────────────────
+        long totalClients;
+        long totalCommandes;
+        long commandesMois;
+        long totalDevis;
+        try {
+            totalClients  = clientRepository.count();
+            java.time.LocalDate debut = java.time.LocalDate.now().withDayOfMonth(1);
+            java.time.LocalDateTime debutDt = debut.atStartOfDay();
+            totalCommandes = commandeRepository.count();
+            commandesMois  = commandeRepository.findAll().stream()
+                .filter(c -> c.getDateCommande() != null && !c.getDateCommande().isBefore(debutDt))
+                .count();
+            totalDevis = devisRepository.count();
+        } catch (Exception e) { totalClients = 0; totalCommandes = 0; commandesMois = 0; totalDevis = 0; }
+
+        // ── KPIs stock ──────────────────────────────────────────────────
+        long totalProduits;
+        long produitsEnAlerte;
+        try {
+            List<com.benjeddou.erp.model.Produit> produits = produitRepository.findAll();
+            totalProduits    = produits.size();
+            produitsEnAlerte = produits.stream()
+                .filter(p -> p.getQuantiteStock() != null
+                          && p.getSeuilStockMin() != null
+                          && p.getQuantiteStock() <= p.getSeuilStockMin())
+                .count();
+        } catch (Exception e) { totalProduits = 0; produitsEnAlerte = 0; }
+
+        // ── Graphique CA des 6 derniers mois ───────────────────────────────
         java.time.LocalDate now = java.time.LocalDate.now();
         List<String> months = new ArrayList<>();
         List<java.math.BigDecimal> revenueData = new ArrayList<>();
-        
+        String[] MOIS_FR = {"Jan","Fév","Mar","Avr","Mai","Jun","Jul","Aoû","Sep","Oct","Nov","Déc"};
+
         for (int i = 5; i >= 0; i--) {
             java.time.LocalDate d = now.minusMonths(i);
-            String monthName = d.getMonth().toString().substring(0, 3);
-            months.add(monthName + " " + d.getYear());
-            
-            java.math.BigDecimal monthRev = factures.stream()
-                .filter(f -> f.getDateEmission().getYear() == d.getYear() && f.getDateEmission().getMonth() == d.getMonth())
+            months.add(MOIS_FR[d.getMonthValue() - 1] + " " + d.getYear());
+
+            java.math.BigDecimal monthRev = facturesPayées.stream()
+                .filter(f -> f.getDateEmission() != null
+                    && f.getDateEmission().getYear() == d.getYear()
+                    && f.getDateEmission().getMonth() == d.getMonth())
                 .map(Facture::getMontantTotal)
                 .filter(Objects::nonNull)
                 .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
             revenueData.add(monthRev);
         }
-        
-        List<Utilisateur> users = utilisateurRepository.findAll();
-        long countAdmin = users.stream().filter(u -> u.getRole().name().equals("ROLE_ADMIN")).count();
-        long countCom = users.stream().filter(u -> u.getRole().name().equals("ROLE_COMMERCIAL")).count();
-        long countComp = users.stream().filter(u -> u.getRole().name().equals("ROLE_COMPTABLE")).count();
-        long countStock = users.stream().filter(u -> u.getRole().name().equals("ROLE_STOCK")).count();
-        
-        stats.put("totalUsers", totalUsers);
-        stats.put("activeUsers", activeUsers);
-        stats.put("totalTransactions", totalTransactions);
-        stats.put("pendingKyc", pendingKyc);
-        stats.put("totalRevenue", totalRevenue);
-        
+
+        // ── Connexions (sécurité) ───────────────────────────────────────────────
+        long totalConnexions;
+        long pendingKyc;
+        try {
+            totalConnexions = connexionLogRepository.count();
+            pendingKyc = documentKycRepository.findAll().stream()
+                .filter(d -> "EN_ATTENTE".equals(d.getStatutVerification())).count();
+        } catch (Exception e) { totalConnexions = 0; pendingKyc = 0; }
+
+        // ── Assemblage de la réponse ───────────────────────────────────────────────
+        stats.put("totalUsers",       totalUsers);
+        stats.put("activeUsers",      activeUsers);
+        stats.put("totalTransactions",totalConnexions);
+        stats.put("pendingKyc",       pendingKyc);
+        stats.put("totalRevenue",     totalRevenue);
+        stats.put("totalFactures",    totalFactures);
+        stats.put("facturesAttente",  facturesAttente);
+        stats.put("totalClients",     totalClients);
+        stats.put("totalCommandes",   totalCommandes);
+        stats.put("commandesMois",    commandesMois);
+        stats.put("totalDevis",       totalDevis);
+        stats.put("totalProduits",    totalProduits);
+        stats.put("produitsEnAlerte", produitsEnAlerte);
+
         Map<String, Object> revenueChart = new HashMap<>();
         revenueChart.put("labels", months);
-        revenueChart.put("data", revenueData);
+        revenueChart.put("data",   revenueData);
         stats.put("revenueChart", revenueChart);
-        
+
         Map<String, Object> rolesChart = new HashMap<>();
-        rolesChart.put("labels", Arrays.asList("Administrateurs", "Commerciaux", "Comptables", "Stock"));
-        rolesChart.put("data", Arrays.asList(countAdmin, countCom, countComp, countStock));
+        rolesChart.put("labels", Arrays.asList("Admins", "Commerciaux", "Comptables", "Stock", "Clients"));
+        rolesChart.put("data",   Arrays.asList(countAdmin, countCom, countComp, countStock, countClient));
         stats.put("rolesChart", rolesChart);
-        
+
+        log.info("[DASHBOARD] tenant={} users={} CA={} TND clients={} commandes={} produits={}",
+            com.benjeddou.erp.config.TenantContextHolder.getCurrentTenant(),
+            totalUsers, totalRevenue, totalClients, totalCommandes, totalProduits);
+
         return ResponseEntity.ok(stats);
     }
 
-    // ── RÔLES & PERMISSIONS : ENREGISTREMENT ET LECTURE ──────────────────────
-    private static final Map<String, Object> rolesPermissionsStore = new HashMap<>();
+    // ── RÔLES & PERMISSIONS : PERSISTANCE EN BASE TENANT ─────────────────────
+    // Solution définitive : les permissions sont stockées dans la table `roles_config`
+    // de la base MySQL du tenant (un enregistrement JSON unique, upsert par id=1).
+    // Plus de stockage volatile en mémoire — survit aux redémarrages du serveur.
 
+    @Value("${spring.datasource.url}")
+    private String rpMasterDbUrl;
+
+    @Value("${spring.datasource.username}")
+    private String rpMasterUsername;
+
+    @Value("${spring.datasource.password:}")
+    private String rpMasterPassword;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** Résout l'URL JDBC vers la base tenant de l'admin connecté. */
+    private Optional<String[]> resoudreTenantJdbc() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !(auth.getPrincipal() instanceof UserDetailsImpl principal)) return Optional.empty();
+
+        return utilisateurRepository.findById(principal.getId())
+            .flatMap(u -> {
+                String schema = u.getEntrepriseSchema();
+                if (schema == null || schema.isBlank()) return Optional.empty();
+                return entrepriseRepository.findBySchemaName(schema)
+                    .map(ent -> new String[]{
+                        ent.getDbUrl() != null ? ent.getDbUrl() : "",
+                        ent.getDbUsername() != null ? ent.getDbUsername() : rpMasterUsername,
+                        ent.getDbPassword() != null ? ent.getDbPassword() : (rpMasterPassword != null ? rpMasterPassword : "")
+                    });
+            });
+    }
+
+    /**
+     * GET /api/admin/roles-permissions
+     * Lit la configuration JSON depuis roles_config en base tenant.
+     * Retourne { roles: [...] } si une config existe, ou {} sinon (le frontend utilisera ses défauts).
+     */
     @GetMapping("/roles-permissions")
     @PreAuthorize("hasRole('ADMIN') or hasRole('SUPERADMIN')")
     public ResponseEntity<?> getRolesPermissions() {
-        return ResponseEntity.ok(rolesPermissionsStore);
+        Optional<String[]> jdbcOpt = resoudreTenantJdbc();
+        if (jdbcOpt.isEmpty()) {
+            log.warn("[RolesPerms] GET — tenant non résolu, retour vide");
+            return ResponseEntity.ok(Map.of());
+        }
+        String[] jdbc = jdbcOpt.get();
+        String sql = "SELECT config_json FROM roles_config WHERE id = 1";
+        try (Connection conn = DriverManager.getConnection(jdbc[0], jdbc[1], jdbc[2]);
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                String json = rs.getString("config_json");
+                @SuppressWarnings("unchecked")
+                List<Object> roles = objectMapper.readValue(json, List.class);
+                log.info("[RolesPerms] GET — {} rôles chargés depuis la DB", roles.size());
+                return ResponseEntity.ok(Map.of("roles", roles));
+            }
+        } catch (Exception e) {
+            log.warn("[RolesPerms] GET — erreur lecture DB : {}", e.getMessage());
+        }
+        return ResponseEntity.ok(Map.of()); // pas encore de config → le frontend initialise
     }
 
+    /**
+     * PUT /api/admin/roles-permissions
+     * Persiste la matrice JSON dans roles_config (UPSERT — INSERT OR UPDATE sur id=1).
+     * Les modifications survivent aux redémarrages. Disponibles immédiatement après enregistrement.
+     */
     @PutMapping("/roles-permissions")
     @PreAuthorize("hasRole('ADMIN') or hasRole('SUPERADMIN')")
-    public ResponseEntity<?> saveRolesPermissions(@RequestBody List<Map<String, Object>> rolesPayload, HttpServletRequest request) {
-        log.info("🛡️ Sauvegarde des Rôles & Permissions ({} rôles)", rolesPayload.size());
-        rolesPermissionsStore.put("roles", rolesPayload);
+    public ResponseEntity<?> saveRolesPermissions(@RequestBody List<Map<String, Object>> rolesPayload,
+                                                   HttpServletRequest request) {
+        log.info("🛡️ [RolesPerms] PUT — sauvegarde {} rôles en DB", rolesPayload.size());
+
+        Optional<String[]> jdbcOpt = resoudreTenantJdbc();
+        if (jdbcOpt.isEmpty()) {
+            log.warn("[RolesPerms] PUT — tenant non résolu, sauvegarde ignorée");
+            return ResponseEntity.ok(Map.of("message", "Config sauvegardée localement (tenant non résolu)."));
+        }
+
+        String[] jdbc = jdbcOpt.get();
+        String upsertSql = """
+            INSERT INTO roles_config (id, config_json, updated_at)
+            VALUES (1, ?, NOW())
+            ON DUPLICATE KEY UPDATE config_json = VALUES(config_json), updated_at = NOW()
+            """;
+        try {
+            String json = objectMapper.writeValueAsString(rolesPayload);
+            try (Connection conn = DriverManager.getConnection(jdbc[0], jdbc[1], jdbc[2]);
+                 PreparedStatement ps = conn.prepareStatement(upsertSql)) {
+                ps.setString(1, json);
+                ps.executeUpdate();
+                log.info("✅ [RolesPerms] {} rôles persistés en DB (JSON {} chars)", rolesPayload.size(), json.length());
+            }
+        } catch (Exception e) {
+            log.error("❌ [RolesPerms] Erreur persistance : {}", e.getMessage());
+            return ResponseEntity.status(500).body(Map.of("message", "Erreur sauvegarde : " + e.getMessage()));
+        }
 
         auditService.log(ActionAudit.ROLE_MODIFIE, ResultatAudit.SUCCES,
             "Permissions rôles mises à jour (" + rolesPayload.size() + " rôles)",
@@ -642,4 +858,74 @@ public class AdminController {
             "count", rolesPayload.size()
         ));
     }
+
+    /**
+     * GET /api/admin/my-permissions
+     *
+     * Retourne les permissions du rôle de l'utilisateur connecté, lues depuis
+     * la table roles_config du tenant. Accessible à TOUS les utilisateurs authentifiés
+     * (pas seulement les admins) — le @PreAuthorize ici écrase le niveau classe.
+     *
+     * Réponse : { role: "COMMERCIAL", modulePermissions: [{module, permissions: {...}}] }
+     * Si aucune config n'existe : { role: "...", modulePermissions: [] }
+     */
+    @GetMapping("/my-permissions")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<?> getMyPermissions() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) {
+            return ResponseEntity.ok(Map.of("role", "", "modulePermissions", List.of()));
+        }
+
+        // Extraire le nom de rôle depuis les autorités Spring Security
+        String springRole = auth.getAuthorities().stream()
+            .map(a -> a.getAuthority())
+            .findFirst().orElse("ROLE_USER");
+        // Supprimer le préfixe ROLE_ → "COMMERCIAL", "COMPTABLE", etc.
+        String roleName = springRole.startsWith("ROLE_") ? springRole.substring(5) : springRole;
+
+        log.debug("[MyPermissions] Utilisateur={} rôle={}", auth.getName(), roleName);
+
+        // Résoudre le tenant JDBC de l'utilisateur connecté
+        Optional<String[]> jdbcOpt = resoudreTenantJdbc();
+        if (jdbcOpt.isEmpty()) {
+            log.warn("[MyPermissions] Tenant non résolu pour rôle={}, mode permissif", roleName);
+            return ResponseEntity.ok(Map.of("role", roleName, "modulePermissions", List.of()));
+        }
+
+        String[] jdbc = jdbcOpt.get();
+        String sql = "SELECT config_json FROM roles_config WHERE id = 1";
+        try (Connection conn = DriverManager.getConnection(jdbc[0], jdbc[1], jdbc[2]);
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                String json = rs.getString("config_json");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> roles = objectMapper.readValue(json, List.class);
+
+                // Trouver le rôle correspondant (insensible à la casse)
+                final String roleNameFinal = roleName;
+                Optional<Map<String, Object>> matchingRole = roles.stream()
+                    .filter(r -> roleNameFinal.equalsIgnoreCase((String) r.get("nom")))
+                    .findFirst();
+
+                if (matchingRole.isPresent()) {
+                    Object modulePermissions = matchingRole.get().get("modulePermissions");
+                    log.info("[MyPermissions] Permissions trouvées pour rôle={}", roleName);
+                    return ResponseEntity.ok(Map.of(
+                        "role", roleName,
+                        "modulePermissions", modulePermissions != null ? modulePermissions : List.of()
+                    ));
+                } else {
+                    log.info("[MyPermissions] Rôle={} non trouvé dans la config → mode permissif", roleName);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[MyPermissions] Erreur lecture DB pour rôle={} : {}", roleName, e.getMessage());
+        }
+
+        // Aucune config trouvée → mode permissif (pas de restrictions)
+        return ResponseEntity.ok(Map.of("role", roleName, "modulePermissions", List.of()));
+    }
 }
+

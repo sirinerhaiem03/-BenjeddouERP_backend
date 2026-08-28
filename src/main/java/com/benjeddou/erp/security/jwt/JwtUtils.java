@@ -32,7 +32,7 @@ public class JwtUtils {
      */
     public String generateJwtToken(Authentication authentication) {
         UserDetailsImpl userPrincipal = (UserDetailsImpl) authentication.getPrincipal();
-        return buildToken(userPrincipal.getUsername());
+        return buildToken(userPrincipal.getUsername(), userPrincipal.getEntrepriseSchema(), userPrincipal.getEntrepriseId());
     }
 
     /**
@@ -40,12 +40,23 @@ public class JwtUtils {
      * Utilisé par l'endpoint /api/auth/refresh.
      */
     public String generateJwtTokenFromUsername(String username) {
-        return buildToken(username);
+        return buildToken(username, null, null);
     }
 
-    private String buildToken(String username) {
-        return Jwts.builder()
-                .setSubject(username)
+    public String generateJwtTokenFromUsername(String username, String schema, Long entrepriseId) {
+        return buildToken(username, schema, entrepriseId);
+    }
+
+    private String buildToken(String username, String schema, Long entrepriseId) {
+        JwtBuilder builder = Jwts.builder()
+                .setSubject(username);
+        if (schema != null && !schema.isBlank()) {
+            builder.claim("schema", schema);
+        }
+        if (entrepriseId != null) {
+            builder.claim("entrepriseId", entrepriseId);
+        }
+        return builder
                 .setIssuedAt(new Date())
                 .setExpiration(new Date(System.currentTimeMillis() + jwtExpirationMs))
                 .signWith(key(), SignatureAlgorithm.HS256)
@@ -66,6 +77,21 @@ public class JwtUtils {
     public String getUserNameFromJwtToken(String token) {
         return Jwts.parserBuilder().setSigningKey(key()).build()
                 .parseClaimsJws(token).getBody().getSubject();
+    }
+
+    /**
+     * Extrait le schema tenant d'un JWT (valide ou expiré).
+     */
+    public String getSchemaFromJwtToken(String token) {
+        try {
+            Claims claims = Jwts.parserBuilder().setSigningKey(key()).build()
+                    .parseClaimsJws(token).getBody();
+            return claims.get("schema", String.class);
+        } catch (io.jsonwebtoken.ExpiredJwtException e) {
+            return e.getClaims() != null ? e.getClaims().get("schema", String.class) : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

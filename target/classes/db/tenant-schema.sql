@@ -191,32 +191,32 @@ CREATE TABLE IF NOT EXISTS factures (
 
 -- ─────────────────────────────────────────────────────────────
 -- TABLE : commandes_achat (achats fournisseurs)
+-- Colonnes alignées avec CommandeAchat.java
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS commandes_achat (
-    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
-    numero_commande     VARCHAR(50)   NOT NULL UNIQUE,
-    date_commande       TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    statut              VARCHAR(20)   NOT NULL DEFAULT 'EN_ATTENTE',
-    montant_ht          DECIMAL(15,3) NOT NULL DEFAULT 0.000,
-    montant_tva         DECIMAL(15,3) NOT NULL DEFAULT 0.000,
-    montant_total       DECIMAL(15,3) NOT NULL DEFAULT 0.000,
-    notes               TEXT          NULL,
-    fournisseur_id      BIGINT        NULL,
-    date_livraison_prev DATE          NULL,
-    date_creation       TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    date_modification   TIMESTAMP     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_ca_fournisseur FOREIGN KEY (fournisseur_id) REFERENCES fournisseurs(id) ON DELETE SET NULL
+    id                      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    numero_commande         VARCHAR(50)   NOT NULL UNIQUE,
+    date_commande           DATETIME      DEFAULT CURRENT_TIMESTAMP,
+    statut                  VARCHAR(30)   NOT NULL DEFAULT 'EN_ATTENTE',
+    montant_total           DECIMAL(15,3) NOT NULL DEFAULT 0.000,
+    notes                   VARCHAR(500)  NULL,
+    date_livraison_prevue   DATETIME      NULL,
+    fournisseur_id          BIGINT        NOT NULL,
+    date_creation           DATETIME      DEFAULT CURRENT_TIMESTAMP,
+    date_modification       DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_ca_fournisseur FOREIGN KEY (fournisseur_id) REFERENCES fournisseurs(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS ligne_commandes_achat (
+CREATE TABLE IF NOT EXISTS lignes_commande_achat (
     id                BIGINT AUTO_INCREMENT PRIMARY KEY,
     commande_achat_id BIGINT        NOT NULL,
-    produit_id        BIGINT        NOT NULL,
-    quantite          INT           NOT NULL,
-    prix_unitaire     DECIMAL(15,3) NOT NULL,
-    taux_tva          DECIMAL(5,2)  DEFAULT 19.00,
+    produit_id        BIGINT        NULL,
+    designation       VARCHAR(200)  NULL,
+    quantite          INT           NOT NULL DEFAULT 1,
+    prix_unitaire     DECIMAL(15,3) NOT NULL DEFAULT 0.000,
+    montant_ligne     DECIMAL(15,3) NOT NULL DEFAULT 0.000,
     CONSTRAINT fk_lca_commande FOREIGN KEY (commande_achat_id) REFERENCES commandes_achat(id) ON DELETE CASCADE,
-    CONSTRAINT fk_lca_produit  FOREIGN KEY (produit_id)        REFERENCES produits(id)        ON DELETE RESTRICT
+    CONSTRAINT fk_lca_produit  FOREIGN KEY (produit_id)        REFERENCES produits(id)        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─────────────────────────────────────────────────────────────
@@ -309,21 +309,23 @@ CREATE TABLE IF NOT EXISTS ligne_inventaires (
 
 -- ─────────────────────────────────────────────────────────────
 -- TABLE : receptions_livraison
+-- Colonnes alignées avec ReceptionLivraison.java
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS receptions_livraison (
-    id                BIGINT AUTO_INCREMENT PRIMARY KEY,
-    numero_reception  VARCHAR(50)   NOT NULL UNIQUE,
-    commande_achat_id BIGINT        NULL,
-    fournisseur_id    BIGINT        NULL,
-    entrepot_id       BIGINT        NULL,
-    statut            VARCHAR(20)   NOT NULL DEFAULT 'EN_ATTENTE',
-    notes             TEXT          NULL,
-    date_reception    TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    date_creation     TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-    date_modification TIMESTAMP     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_rl_commande    FOREIGN KEY (commande_achat_id) REFERENCES commandes_achat(id) ON DELETE SET NULL,
-    CONSTRAINT fk_rl_fournisseur FOREIGN KEY (fournisseur_id)   REFERENCES fournisseurs(id)    ON DELETE SET NULL,
-    CONSTRAINT fk_rl_entrepot    FOREIGN KEY (entrepot_id)      REFERENCES entrepots(id)       ON DELETE SET NULL
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    numero_reception    VARCHAR(50)  NOT NULL UNIQUE,
+    commande_achat_id   BIGINT       NULL,
+    produit_id          BIGINT       NULL,
+    entrepot_id         BIGINT       NULL,
+    statut              VARCHAR(20)  NOT NULL DEFAULT 'CONFORME',
+    quantite_commandee  INT          NULL,
+    quantite_recue      INT          NULL,
+    observations        VARCHAR(500) NULL,
+    date_reception      DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    date_creation       DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_rl_commande FOREIGN KEY (commande_achat_id) REFERENCES commandes_achat(id) ON DELETE SET NULL,
+    CONSTRAINT fk_rl_produit  FOREIGN KEY (produit_id)        REFERENCES produits(id)        ON DELETE SET NULL,
+    CONSTRAINT fk_rl_entrepot FOREIGN KEY (entrepot_id)       REFERENCES entrepots(id)       ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─────────────────────────────────────────────────────────────
@@ -558,4 +560,21 @@ CREATE TABLE IF NOT EXISTS `codes_promo` (
 -- ══════════════════════════════════════════════════════════════
 ALTER TABLE devis ADD COLUMN montant_total DECIMAL(15,3) NOT NULL DEFAULT 0.000;
 UPDATE devis SET montant_total = montant_ttc WHERE montant_total = 0 AND montant_ttc > 0;
+
+-- ══════════════════════════════════════════════════════════════
+-- MIGRATIONS : commandes_achat — colonnes manquantes
+-- Bases créées avant l'ajout de date_livraison_prevue dans le schéma
+-- L'erreur 1060 (colonne déjà existante) est ignorée par DatabaseInitializer
+-- ══════════════════════════════════════════════════════════════
+ALTER TABLE commandes_achat ADD COLUMN date_livraison_prevue DATETIME NULL;
+ALTER TABLE commandes_achat CHANGE COLUMN date_livraison_prev date_livraison_prevue DATETIME NULL;
+
+-- ══════════════════════════════════════════════════════════════
+-- MIGRATIONS : receptions_livraison — colonnes manquantes
+-- Colonnes présentes dans ReceptionLivraison.java mais absentes de la table
+-- ══════════════════════════════════════════════════════════════
+ALTER TABLE receptions_livraison ADD COLUMN observations VARCHAR(500) NULL;
+ALTER TABLE receptions_livraison ADD COLUMN produit_id BIGINT NULL;
+ALTER TABLE receptions_livraison ADD COLUMN quantite_commandee INT NULL;
+ALTER TABLE receptions_livraison ADD COLUMN quantite_recue INT NULL;
 

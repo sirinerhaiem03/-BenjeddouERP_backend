@@ -144,6 +144,20 @@
             <version>2.15.1</version>
         </dependency>
 
+        <!-- ══════════════════════════════════════════════════════════════ -->
+        <!-- CRYPTOGRAPHIE AVANCÉE : Bouncy Castle pour Argon2id & KMS    -->
+        <!-- ══════════════════════════════════════════════════════════════ -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpkix-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
+
     </dependencies>
 
 

@@ -22,13 +22,21 @@ import java.util.List;
  * Permet de sauvegarder, lister et restaurer des versions antérieures.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class DocumentVersionService {
 
     private final DocumentGenereRepository documentGenereRepository;
     private final VersionDocumentRepository versionDocumentRepository;
     private final UtilisateurRepository utilisateurRepository;
+
+    public DocumentVersionService(
+            DocumentGenereRepository documentGenereRepository,
+            VersionDocumentRepository versionDocumentRepository,
+            UtilisateurRepository utilisateurRepository) {
+        this.documentGenereRepository = documentGenereRepository;
+        this.versionDocumentRepository = versionDocumentRepository;
+        this.utilisateurRepository = utilisateurRepository;
+    }
 
     /**
      * Sauvegarde la version courante d'un document avant modification.

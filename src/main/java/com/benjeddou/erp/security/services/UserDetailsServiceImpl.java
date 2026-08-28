@@ -54,8 +54,11 @@ public class UserDetailsServiceImpl implements UserDetailsService {
     @Value("${spring.datasource.username}")
     private String masterUsername;
 
-    @Value("${spring.datasource.password}")
+    @Value("${spring.datasource.password:}")
     private String masterPassword;
+
+    @Value("${spring.datasource.url}")
+    private String masterDbUrl; // utilisé pour construire l'URL root vers les bases tenant
 
     /**
      * Résolution Multi-Tenant de l'identifiant de connexion.
@@ -83,13 +86,110 @@ public class UserDetailsServiceImpl implements UserDetailsService {
             Utilisateur user = userInMaster.get();
             log.debug("Utilisateur '{}' trouvé dans la base master (rôle: {})", username, user.getRole());
 
-            // Si l'utilisateur a un entrepriseSchema → router vers sa base entreprise
-            if (user.getEntrepriseSchema() != null && !user.getEntrepriseSchema().isBlank()) {
-                chargerTenantSiNecessaire(user.getEntrepriseSchema());
-                TenantContextHolder.setCurrentTenant(user.getEntrepriseSchema());
-                log.info("Tenant défini pour '{}' : {}", username, user.getEntrepriseSchema());
+            // ═══════════════════════════════════════════════════════════════
+            // RÈGLE ABSOLUE DU ROUTAGE MULTI-TENANT :
+            //
+            // Si l'enregistrement master a entrepriseSchema NON NULL
+            // → c'est un admin tenant dont l'entrée master a été créée
+            //   accidentellement (login JPA save avec mauvais contexte).
+            // → Son rôle réel vient UNIQUEMENT de la base tenant.
+            // → Ne JAMAIS lui accorder le rôle SUPERADMIN depuis master.
+            //
+            // Si entrepriseSchema est NULL → c'est un vrai compte master
+            // (SuperAdmin, CLIENT trial…). Son rôle master est la vérité.
+            // ═══════════════════════════════════════════════════════════════
+
+            // 1a. Vrai compte master (pas de tenant attaché) → rôle master
+            if (user.getEntrepriseSchema() == null || user.getEntrepriseSchema().isBlank()) {
+                if (user.getRole() == Role.SUPERADMIN) {
+                    TenantContextHolder.clear();
+                    return UserDetailsImpl.build(user);
+                }
+                // Autre rôle master (CLIENT trial, etc.) → connexion master
+                TenantContextHolder.clear();
+                return UserDetailsImpl.build(user);
             }
-            // Sinon → SuperAdmin → base master (pas de TenantContext)
+
+            // 1b. L'enregistrement master a un entrepriseSchema
+            //     → Admin/Commercial/etc. d'un tenant.
+            //     Lire son rôle RÉEL depuis la base tenant (JAMAIS depuis master).
+            {
+                String schema = user.getEntrepriseSchema();
+                chargerTenantSiNecessaire(schema);
+
+                // CRITIQUE : lire entreprise AVANT de setter le contexte tenant.
+                // La table 'entreprises' est dans la base MASTER uniquement.
+                Optional<Entreprise> entOpt = entrepriseRepository.findBySchemaName(schema);
+
+                // Setter le contexte tenant
+                TenantContextHolder.setCurrentTenant(schema);
+                log.info("Tenant défini pour '{}' : {}", username, schema);
+
+                if (entOpt.isPresent()) {
+                    Entreprise ent = entOpt.get();
+                    String url = ent.getDbUrl() != null ? ent.getDbUrl()
+                        : "jdbc:mysql://localhost:3306/" + schema + "?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+                    String dbUser = ent.getDbUsername() != null ? ent.getDbUsername() : masterUsername;
+                    String dbPass = ent.getDbPassword() != null ? ent.getDbPassword() : masterPassword;
+                    try {
+                        Utilisateur tenantUser = chercherUtilisateurJDBC(url, dbUser, dbPass, username);
+                        if (tenantUser == null) {
+                            // Fallback root
+                            String rootUrl = masterDbUrl.replaceFirst("//([^/]+)/[^?]+", "//" + "$1" + "/" + schema);
+                            tenantUser = chercherUtilisateurJDBC(rootUrl, masterUsername, masterPassword != null ? masterPassword : "", username);
+                        }
+                        if (tenantUser != null) {
+                            tenantUser.setEntrepriseSchema(schema);
+                            tenantUser.setEntrepriseId(ent.getId());
+
+                            // Vérifier que le rôle tenant n'est pas SUPERADMIN (protection)
+                            // Un admin tenant ne peut JAMAIS être SUPERADMIN
+                            if (tenantUser.getRole() == Role.SUPERADMIN) {
+                                log.warn("[SÉCURITÉ] Utilisateur '{}' a le rôle SUPERADMIN dans la base tenant '{}' !"
+                                       + " C'est une anomalie — rôle forcé à ADMIN.", username, schema);
+                                tenantUser.setRole(Role.ADMIN);
+                            }
+
+                            // Synchronisation hash master ↔ tenant
+                            String hashMaster = user.getMotDePasse();
+                            String hashTenant = tenantUser.getMotDePasse();
+                            if (hashMaster != null && !hashMaster.equals(hashTenant)) {
+                                log.warn("[SYNC] Hash désynchronisé pour '{}' (master ≠ tenant) — synchronisation automatique...", username);
+                                try {
+                                    String sqlSync = "UPDATE utilisateurs SET mot_de_passe = ? WHERE nom_utilisateur = ? OR email = ?";
+                                    try (Connection syncConn = DriverManager.getConnection(url, dbUser, dbPass);
+                                         PreparedStatement syncPs = syncConn.prepareStatement(sqlSync)) {
+                                        syncPs.setString(1, hashMaster);
+                                        syncPs.setString(2, username);
+                                        syncPs.setString(3, username);
+                                        int rows = syncPs.executeUpdate();
+                                        log.info("[SYNC] Hash synchronisé dans tenant '{}' pour '{}' ({} ligne(s))", schema, username, rows);
+                                    }
+                                    tenantUser.setMotDePasse(hashMaster);
+                                } catch (Exception syncEx) {
+                                    log.warn("[SYNC] Synchronisation hash échouée pour '{}' : {} — utilisation hash master", username, syncEx.getMessage());
+                                    tenantUser.setMotDePasse(hashMaster);
+                                }
+                            }
+
+                            log.info("Utilisateur tenant '{}' authentifié via '{}' (rôle: {})",
+                                     username, schema, tenantUser.getRole());
+                            return UserDetailsImpl.build(tenantUser);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Recherche tenant JDBC échouée pour {}: {}", username, e.getMessage());
+                    }
+                }
+
+                // Non trouvé dans le tenant → fallback sur l'enregistrement master
+                // (en forcéant le rôle à ADMIN si c'était SUPERADMIN par erreur)
+                log.warn("[TENANT] Utilisateur '{}' introuvable dans '{}' via JDBC → fallback master", username, schema);
+                TenantContextHolder.clear();
+                if (user.getRole() == Role.SUPERADMIN && user.getEntrepriseSchema() != null) {
+                    log.warn("[SÉCURITÉ] Rôle master SUPERADMIN pour un admin tenant '{}' → forcé à ADMIN", username);
+                    user.setRole(Role.ADMIN);
+                }
+            }
 
             return UserDetailsImpl.build(user);
         }
@@ -112,22 +212,50 @@ public class UserDetailsServiceImpl implements UserDetailsService {
 
             if (url == null || url.isBlank()) continue;
 
+            // Tentative 1 : connexion avec l'user dédié erp_user_XXXXX
+            Utilisateur found = null;
             try {
-                // ► Recherche directement via JDBC (contourne le routage JPA)
-                Utilisateur found = chercherUtilisateurJDBC(url, user, pass, username);
-
-                if (found != null) {
-                    log.info("Utilisateur '{}' trouvé dans '{}' (rôle: {})", username, schema, found.getRole());
-
-                    // Charger le DataSource pour les futures requêtes JPA de cet utilisateur
-                    chargerTenantSiNecessaire(schema);
-                    TenantContextHolder.setCurrentTenant(schema);
-
-                    return UserDetailsImpl.build(found);
-                }
-
+                found = chercherUtilisateurJDBC(url, user, pass, username);
             } catch (Exception e) {
-                log.warn("Erreur lors de la recherche dans '{}' : {}", schema, e.getMessage());
+                log.warn("Recherche avec user dédié dans '{}' échouée ({}). Tentative root...", schema, e.getMessage());
+            }
+
+            // Tentative 2 (fallback root) — si erp_user_XXXXX n'a pas les droits (Aria corrompu)
+            if (found == null) {
+                try {
+                    String rootUrl = masterDbUrl
+                        .replaceFirst("//([^/]+)/[^?]+", "//" + "$1" + "/" + schema);
+                    found = chercherUtilisateurJDBC(rootUrl, masterUsername, masterPassword != null ? masterPassword : "", username);
+                    if (found != null) {
+                        log.info("Utilisateur '{}' trouvé dans '{}' via ROOT (fallback Aria)", username, schema);
+                    }
+                } catch (Exception e) {
+                    log.warn("Recherche ROOT dans '{}' échouée : {}", schema, e.getMessage());
+                }
+            }
+
+            if (found != null) {
+                log.info("Utilisateur '{}' trouvé dans '{}' (rôle: {})", username, schema, found.getRole());
+                found.setEntrepriseSchema(schema);
+                found.setEntrepriseId(entreprise.getId());
+
+                // Charger le DataSource pour les futures requêtes JPA de cet utilisateur
+                // Si erp_user n'a pas les droits, on charge le DataSource root pour le routage JPA
+                if (!tenantDataSourceConfig.tenantExists(schema)) {
+                    String rootUrl = masterDbUrl
+                        .replaceFirst("//([^/]+)/[^?]+", "//" + "$1" + "/" + schema);
+                    // Essayer d'abord avec l'user dédié, puis root
+                    try {
+                        tenantDataSourceConfig.addTenantDataSource(schema, url, user, pass);
+                        log.debug("DataSource chargé pour '{}' avec user dédié", schema);
+                    } catch (Exception e) {
+                        log.warn("DataSource user dédié échoué pour '{}', chargement root", schema);
+                        tenantDataSourceConfig.addTenantDataSource(schema, rootUrl, masterUsername, masterPassword != null ? masterPassword : "");
+                    }
+                }
+                TenantContextHolder.setCurrentTenant(schema);
+
+                return UserDetailsImpl.build(found);
             }
         }
 

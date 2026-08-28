@@ -1,5 +1,6 @@
 package com.benjeddou.erp.exception;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -32,6 +33,7 @@ import java.util.stream.Collectors;
  * la couche service ou la base de données.
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
 
     /**
@@ -83,7 +85,8 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
-        // Log interne (ne pas exposer à l'utilisateur)
+        // Log complet avec stack trace — visible dans la console Spring Boot pour débogage
+        log.error("ERREUR NON CAPTURÉE — Type: {} — Message: {}", ex.getClass().getName(), ex.getMessage(), ex);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("statut", 500);
         body.put("erreur", "Une erreur interne s'est produite. Veuillez réessayer.");

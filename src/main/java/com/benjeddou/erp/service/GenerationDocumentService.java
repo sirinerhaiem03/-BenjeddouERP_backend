@@ -26,7 +26,6 @@ import java.util.regex.Pattern;
  * Gère l'export PDF via LibreOffice headless (si disponible) ou fallback texte.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class GenerationDocumentService {
 
@@ -34,6 +33,17 @@ public class GenerationDocumentService {
     private final DocumentGenereRepository documentGenereRepository;
     private final UtilisateurRepository utilisateurRepository;
     private final ObjectMapper objectMapper;
+
+    public GenerationDocumentService(
+            ModeleDocumentRepository modeleRepository,
+            DocumentGenereRepository documentGenereRepository,
+            UtilisateurRepository utilisateurRepository,
+            ObjectMapper objectMapper) {
+        this.modeleRepository = modeleRepository;
+        this.documentGenereRepository = documentGenereRepository;
+        this.utilisateurRepository = utilisateurRepository;
+        this.objectMapper = objectMapper;
+    }
 
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{\\{([^}]+)\\}\\}");
 

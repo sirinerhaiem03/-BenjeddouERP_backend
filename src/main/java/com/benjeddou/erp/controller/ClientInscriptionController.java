@@ -3,9 +3,11 @@ package com.benjeddou.erp.controller;
 import com.benjeddou.erp.model.*;
 import com.benjeddou.erp.payload.response.MessageReponse;
 import com.benjeddou.erp.repository.DocumentKycRepository;
+import com.benjeddou.erp.repository.EntrepriseRepository;
 import com.benjeddou.erp.repository.UtilisateurRepository;
 import com.benjeddou.erp.service.EntrepriseService;
 import com.benjeddou.erp.service.OtpService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -15,6 +17,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.util.*;
 
+@Slf4j
 @CrossOrigin(origins = "*", maxAge = 3600)
 @RestController
 @RequestMapping("/api/client")
@@ -22,6 +25,7 @@ public class ClientInscriptionController {
 
     @Autowired UtilisateurRepository utilisateurRepository;
     @Autowired DocumentKycRepository documentKycRepository;
+    @Autowired EntrepriseRepository entrepriseRepository;
     @Autowired PasswordEncoder encoder;
     @Autowired OtpService otpService;
     @Autowired EntrepriseService entrepriseService;
@@ -66,16 +70,10 @@ public class ClientInscriptionController {
         }
 
         try {
-            String devCode = otpService.genererEtEnvoyer(email, prenom);
-            if (devCode != null) {
-                // Mode dev : email a échoué, code retourné dans la réponse
-                return ResponseEntity.ok(Map.of(
-                    "message", "[DEV] Email indisponible. Code OTP : " + devCode,
-                    "devCode", devCode,
-                    "emailSent", false
-                ));
-            }
-            return ResponseEntity.ok(new MessageReponse("Code OTP envoyé à " + email));
+            otpService.genererEtEnvoyer(email, prenom);
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("message", "Code OTP envoyé à " + email);
+            return ResponseEntity.ok(resp);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new MessageReponse("Erreur envoi email : " + e.getMessage()));
@@ -168,6 +166,26 @@ public class ClientInscriptionController {
         // Statut selon le mode choisi
         StatutCompte statut = modeTrial ? StatutCompte.ACTIF : StatutCompte.EN_ATTENTE;
 
+        // ╔════════════════════════════════════════════════════════════
+        // MULTI-TENANT : Créer la base de données dédiée de l'entreprise (erp_ent_XXXXX)
+        // ╚════════════════════════════════════════════════════════════
+        com.benjeddou.erp.model.Entreprise entreprise;
+        try {
+            entreprise = entrepriseService.creerEntreprise(
+                societe != null && !societe.isBlank() ? societe : nomUtilisateur,
+                email,
+                null
+            );
+        } catch (Exception ex) {
+            log.error("Erreur création base tenant pour '{}' : {}", nomUtilisateur, ex.getMessage(), ex);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new MessageReponse("Erreur création base entreprise : " + ex.getMessage()));
+        }
+
+        // ╔════════════════════════════════════════════════════════════
+        // Créer l'administrateur UNIQUEMENT dans la base de son entreprise (erp_ent_XXXXX.utilisateurs)
+        // La base master (benjeddou_erp.utilisateurs) contient STRICTEMENT ET UNIQUEMENT le Superadmin
+        // ╚════════════════════════════════════════════════════════════
         Utilisateur client = Utilisateur.builder()
             .nomUtilisateur(nomUtilisateur)
             .email(email)
@@ -177,7 +195,7 @@ public class ClientInscriptionController {
             .telephone(telephone)
             .societe(societe)
             .adresse(adresse)
-            .role(Role.CLIENT)
+            .role(Role.ADMIN)
             .statutCompte(statut)
             .modeTrial(modeTrial)
             .nbUtilisations(0)
@@ -185,32 +203,31 @@ public class ClientInscriptionController {
             .actif(modeTrial)
             .kycSoumis(false)
             .languePreferee("fr")
+            .entrepriseId(entreprise.getId())
+            .entrepriseSchema(entreprise.getSchemaName())
             .build();
 
-        Utilisateur clientSauvegarde = utilisateurRepository.save(client);
-
-        // ╔════════════════════════════════════════════════════════════
-        // MULTI-TENANT : Créer automatiquement la base de données dédiée
-        // ╚════════════════════════════════════════════════════════════
-        try {
-            // Crée la base MySQL dédiée : erp_ent_00001, erp_ent_00002...
-            com.benjeddou.erp.model.Entreprise entreprise = entrepriseService.creerEntreprise(
-                societe != null ? societe : nomUtilisateur,
-                email,
-                clientSauvegarde.getId()
-            );
-
-            // Met à jour l'utilisateur avec les infos de son entreprise
-            clientSauvegarde.setEntrepriseId(entreprise.getId());
-            clientSauvegarde.setEntrepriseSchema(entreprise.getSchemaName());
-            utilisateurRepository.save(clientSauvegarde);
-
-        } catch (Exception ex) {
-            // Ne pas bloquer l'inscription si la création DB échoue (log + notification admin)
-            // L'utilisateur peut quand même se connecter sur la base master en attendant
-            java.util.logging.Logger.getLogger(getClass().getName())
-                .severe("Erreur création base tenant pour '" + nomUtilisateur + "' : " + ex.getMessage());
+        // Insertion EXCLUSIVE dans la table utilisateurs de la base dédiée de l'entreprise
+        Long adminUserId = entrepriseService.synchroniserUtilisateurDansTenant(entreprise.getSchemaName(), client);
+        if (adminUserId != null) {
+            entreprise.setAdminId(adminUserId);
+            entrepriseRepository.save(entreprise);
         }
+        log.info("✓ Compte entreprise '{}' créé EXCLUSIVEMENT dans la base tenant '{}' (id={})", nomUtilisateur, entreprise.getSchemaName(), adminUserId);
+
+        // Nettoyage de sécurité : s'assurer qu'aucun utilisateur entreprise ne subsiste dans la base master
+        try {
+            utilisateurRepository.findByNomUtilisateur(nomUtilisateur).ifPresent(u -> {
+                if (u.getRole() != Role.SUPERADMIN) {
+                    utilisateurRepository.delete(u);
+                }
+            });
+            utilisateurRepository.findByEmail(email).ifPresent(u -> {
+                if (u.getRole() != Role.SUPERADMIN) {
+                    utilisateurRepository.delete(u);
+                }
+            });
+        } catch (Exception ignored) {}
 
         String message = modeTrial
             ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites. Votre espace entreprise a été créé automatiquement."

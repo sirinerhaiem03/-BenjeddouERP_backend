@@ -22,12 +22,18 @@ import java.util.Base64;
  * La signature est conservée dans DocumentGenere.signatureBase64.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class SignatureService {
 
     private final DocumentGenereRepository documentGenereRepository;
     private final GenerationDocumentService generationService;
+
+    public SignatureService(
+            DocumentGenereRepository documentGenereRepository,
+            GenerationDocumentService generationService) {
+        this.documentGenereRepository = documentGenereRepository;
+        this.generationService = generationService;
+    }
 
     /**
      * Applique une signature visuelle sur le PDF d'un document généré.
