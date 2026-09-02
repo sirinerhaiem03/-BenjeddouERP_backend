@@ -193,8 +193,10 @@ public class SecurityConfig {
             "http://localhost:4200",
             "http://127.0.0.1:4200",
             "http://localhost:*",
-                "https://benjeddou-erp-frontend-plum.vercel.app/"
-            // PRODUCTION : ajouter ici "https://app.benjeddou.com"
+                "https://benjeddou-erp-frontend-plum.vercel.app/",
+                "https://benjeddou-erp-frontend-git-main-benjeddou.vercel.app", 
+                "https://*.vercel.app"
+                // PRODUCTION : ajouter ici "https://app.benjeddou.com"
         ));
 
         configuration.setAllowedMethods(Arrays.asList(
