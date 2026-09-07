@@ -77,102 +77,103 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-            // ── CSRF ──────────────────────────────────────────────────────────
-            // Désactivé car API REST stateless avec JWT dans l'en-tête Authorization.
-            // Le CSRF ne s'applique pas aux requêtes sans cookie de session.
-            .csrf(csrf -> csrf.disable())
+                // ── CSRF ──────────────────────────────────────────────────────────
+                // Désactivé car API REST stateless avec JWT dans l'en-tête Authorization.
+                // Le CSRF ne s'applique pas aux requêtes sans cookie de session.
+                .csrf(csrf -> csrf.disable())
 
-            // ── CORS ──────────────────────────────────────────────────────────
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                // ── CORS ──────────────────────────────────────────────────────────
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
 
-            // ── HEADERS DE SÉCURITÉ HTTP ──────────────────────────────────────
-            .headers(headers -> headers
-                // X-Frame-Options: DENY — protection anti-clickjacking
-                .frameOptions(frame -> frame.deny())
+                // ── HEADERS DE SÉCURITÉ HTTP ──────────────────────────────────────
+                .headers(headers -> headers
+                        // X-Frame-Options: DENY — protection anti-clickjacking
+                        .frameOptions(frame -> frame.deny())
 
-                // X-Content-Type-Options: nosniff — empêche le MIME sniffing
-                .contentTypeOptions(cto -> {})
+                        // X-Content-Type-Options: nosniff — empêche le MIME sniffing
+                        .contentTypeOptions(cto -> {})
 
-                // HTTP Strict Transport Security — force HTTPS (1 an + sous-domaines)
-                .httpStrictTransportSecurity(hsts -> hsts
-                    .includeSubDomains(true)
-                    .maxAgeInSeconds(31536000)
-                    .preload(true)
+                        // HTTP Strict Transport Security — force HTTPS (1 an + sous-domaines)
+                        .httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(31536000)
+                                .preload(true)
+                        )
+
+                        // Content-Security-Policy — protection XSS et injection de scripts
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives(
+                                        "default-src 'self'; " +
+                                                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com; " +
+                                                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+                                                "font-src 'self' data: https://fonts.gstatic.com; " +
+                                                "img-src 'self' data: blob: https:; " +
+                                                "connect-src 'self' https://api.stripe.com https://ip-api.com; " +
+                                                "frame-src https://js.stripe.com https://hooks.stripe.com; " +
+                                                "worker-src blob:; " +
+                                                "object-src 'none'; " +
+                                                "base-uri 'self'; " +
+                                                "form-action 'self'; " +
+                                                "upgrade-insecure-requests;"
+                                )
+                        )
+
+                        // Referrer-Policy — limiter les informations envoyées aux sites tiers
+                        .referrerPolicy(rp -> rp
+                                .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN)
+                        )
+
+                        // Permissions-Policy — désactiver les fonctionnalités navigateur inutiles
+                        .permissionsPolicy(pp -> pp
+                                .policy("camera=(), microphone=(), geolocation=(), payment=(self), usb=(), " +
+                                        "accelerometer=(), gyroscope=(), magnetometer=()")
+                        )
                 )
 
-                // Content-Security-Policy — protection XSS et injection de scripts
-                .contentSecurityPolicy(csp -> csp
-                    .policyDirectives(
-                        "default-src 'self'; " +
-                        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com; " +
-                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-                        "font-src 'self' data: https://fonts.gstatic.com; " +
-                        "img-src 'self' data: blob: https:; " +
-                        "connect-src 'self' https://api.stripe.com https://ip-api.com; " +
-                        "frame-src https://js.stripe.com https://hooks.stripe.com; " +
-                        "worker-src blob:; " +
-                        "object-src 'none'; " +
-                        "base-uri 'self'; " +
-                        "form-action 'self'; " +
-                        "upgrade-insecure-requests;"
-                    )
+                // ── GESTION DES EXCEPTIONS ─────────────────────────────────────────
+                .exceptionHandling(exception -> exception
+                        .authenticationEntryPoint(unauthorizedHandler)
                 )
 
-                // Referrer-Policy — limiter les informations envoyées aux sites tiers
-                .referrerPolicy(rp -> rp
-                    .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN)
+                // ── SESSION STATELESS (JWT) ────────────────────────────────────────
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
 
-                // Permissions-Policy — désactiver les fonctionnalités navigateur inutiles
-                .permissionsPolicy(pp -> pp
-                    .policy("camera=(), microphone=(), geolocation=(), payment=(self), usb=(), " +
-                            "accelerometer=(), gyroscope=(), magnetometer=()")
-                )
-            )
-
-            // ── GESTION DES EXCEPTIONS ─────────────────────────────────────────
-            .exceptionHandling(exception -> exception
-                .authenticationEntryPoint(unauthorizedHandler)
-            )
-
-            // ── SESSION STATELESS (JWT) ────────────────────────────────────────
-            .sessionManagement(session -> session
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            )
-
-            // ── RÈGLES D'ACCÈS AUX ENDPOINTS ──────────────────────────────────
-            .authorizeHttpRequests(auth -> auth
-                // Preflight CORS
-                .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
-                // Authentification publique (login, refresh, logout)
-                .requestMatchers("/api/auth/**").permitAll()
-                // Portail client public (inscription, OTP, KYC)
-                .requestMatchers("/api/client/register").permitAll()
-                .requestMatchers("/api/client/otp/**").permitAll()
-                .requestMatchers("/api/client/kyc/upload").permitAll()
-                .requestMatchers("/api/client/kyc/document/**").permitAll()
-                // Inscription Administrateur Entreprise (public, sans auth)
-                // Utilise /api/inscription-admin pour éviter le conflit avec AdminController (/api/admin @PreAuthorize)
-                .requestMatchers("/api/inscription-admin/register").permitAll()
-                .requestMatchers("/api/inscription-admin/otp/**").permitAll()
-                .requestMatchers("/api/inscription-admin/check-username").permitAll()
-                .requestMatchers("/api/inscription-admin/check-email").permitAll()
-                // Plans d'abonnement (page publique)
-                .requestMatchers("/api/abonnement/plans").permitAll()
-                // Theme global de la plateforme (charge par tous les users au demarrage)
-                .requestMatchers("/api/theme/current").permitAll()
-                // Stripe (webhook signe cote controller, cle publique)
-                .requestMatchers("/api/stripe/webhook").permitAll()
-                .requestMatchers("/api/stripe/public-key").permitAll()
-                // Assistant IA
-                .requestMatchers("/api/ai/**").permitAll()
-                // Health check (monitoring)
-                .requestMatchers("/actuator/health").permitAll()
-                // Gestion des erreurs Spring
-                .requestMatchers("/error").permitAll()
-                // Tout le reste nécessite un JWT valide
-                .anyRequest().authenticated()
-            );
+                // ── RÈGLES D'ACCÈS AUX ENDPOINTS ──────────────────────────────────
+                .authorizeHttpRequests(auth -> auth
+                        // Preflight CORS
+                        .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
+                        // Authentification publique (login, refresh, logout)
+                        .requestMatchers("/api/auth/**").permitAll()
+                        // Portail client public (inscription, OTP, KYC)
+                        .requestMatchers("/api/client/register").permitAll()
+                        .requestMatchers("/api/client/otp/**").permitAll()
+                        .requestMatchers("/api/client/check-email").permitAll()
+                        .requestMatchers("/api/client/kyc/upload").permitAll()
+                        .requestMatchers("/api/client/kyc/document/**").permitAll()
+                        // Inscription Administrateur Entreprise (public, sans auth)
+                        // Utilise /api/inscription-admin pour éviter le conflit avec AdminController (/api/admin @PreAuthorize)
+                        .requestMatchers("/api/inscription-admin/register").permitAll()
+                        .requestMatchers("/api/inscription-admin/otp/**").permitAll()
+                        .requestMatchers("/api/inscription-admin/check-username").permitAll()
+                        .requestMatchers("/api/inscription-admin/check-email").permitAll()
+                        // Plans d'abonnement (page publique)
+                        .requestMatchers("/api/abonnement/plans").permitAll()
+                        // Theme global de la plateforme (charge par tous les users au demarrage)
+                        .requestMatchers("/api/theme/current").permitAll()
+                        // Stripe (webhook signe cote controller, cle publique)
+                        .requestMatchers("/api/stripe/webhook").permitAll()
+                        .requestMatchers("/api/stripe/public-key").permitAll()
+                        // Assistant IA
+                        .requestMatchers("/api/ai/**").permitAll()
+                        // Health check (monitoring)
+                        .requestMatchers("/actuator/health").permitAll()
+                        // Gestion des erreurs Spring
+                        .requestMatchers("/error").permitAll()
+                        // Tout le reste nécessite un JWT valide
+                        .anyRequest().authenticated()
+                );
 
         http.authenticationProvider(authenticationProvider());
         http.addFilterBefore(authenticationJwtTokenFilter(), UsernamePasswordAuthenticationFilter.class);
@@ -190,36 +191,36 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
 
         configuration.setAllowedOriginPatterns(Arrays.asList(
-            "http://localhost:4200",
-            "http://127.0.0.1:4200",
-            "http://localhost:*",
+                "http://localhost:4200",
+                "http://127.0.0.1:4200",
+                "http://localhost:*",
                 "https://benjeddou-erp-frontend-plum.vercel.app/",
-                "https://benjeddou-erp-frontend-git-main-benjeddou.vercel.app", 
+                "https://benjeddou-erp-frontend-git-main-benjeddou.vercel.app",
                 "https://*.vercel.app"
                 // PRODUCTION : ajouter ici "https://app.benjeddou.com"
         ));
 
         configuration.setAllowedMethods(Arrays.asList(
-            "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"
+                "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"
         ));
 
         configuration.setAllowedHeaders(Arrays.asList(
-            "Authorization",
-            "Content-Type",
-            "Accept",
-            "Origin",
-            "X-Requested-With",
-            "Access-Control-Request-Method",
-            "Access-Control-Request-Headers",
-            "X-XSRF-TOKEN"
+                "Authorization",
+                "Content-Type",
+                "Accept",
+                "Origin",
+                "X-Requested-With",
+                "Access-Control-Request-Method",
+                "Access-Control-Request-Headers",
+                "X-XSRF-TOKEN"
         ));
 
         configuration.setExposedHeaders(Arrays.asList(
-            "Authorization",
-            "Content-Disposition",
-            "Content-Type",
-            "X-Total-Count",
-            "X-Total-Pages"
+                "Authorization",
+                "Content-Disposition",
+                "Content-Type",
+                "X-Total-Count",
+                "X-Total-Pages"
         ));
 
         configuration.setAllowCredentials(true);
