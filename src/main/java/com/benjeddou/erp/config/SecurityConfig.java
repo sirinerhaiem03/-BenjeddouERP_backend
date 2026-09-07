@@ -150,6 +150,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/client/register").permitAll()
                         .requestMatchers("/api/client/otp/**").permitAll()
                         .requestMatchers("/api/client/check-email").permitAll()
+                        .requestMatchers("/api/client/check-username").permitAll()
                         .requestMatchers("/api/client/kyc/upload").permitAll()
                         .requestMatchers("/api/client/kyc/document/**").permitAll()
                         // Inscription Administrateur Entreprise (public, sans auth)
