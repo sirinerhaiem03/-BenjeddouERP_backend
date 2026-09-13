@@ -150,11 +150,8 @@ public class EntrepriseService {
 
         // 2. URL JDBC vers la base tenant (utilisée avec les credentials root)
         String baseUrl     = extractBaseUrl(masterDbUrl);
-        String tenantDbUrl = baseUrl + "/" + schemaName
-                + "?createDatabaseIfNotExist=true"
-                + "&useSSL=false"
-                + "&serverTimezone=UTC"
-                + "&allowPublicKeyRetrieval=true";
+        String tenantDbUrl = buildSecureJdbcUrl(baseUrl, schemaName)
+                + "&createDatabaseIfNotExist=true";
 
         // 3. Provisionner : CREATE DATABASE + CREATE USER 'erp_user_XXXXX' + GRANT
         //    Toutes les opérations DDL utilisent DriverManager (connexions directes fraîches).
@@ -294,8 +291,7 @@ public class EntrepriseService {
 
             // DriverManager.getConnection() → connexion DIRECTE hors pool HikariCP
             // → aucune pollution du master pool quand la connexion est fermée
-            String tenantUrl = masterBaseUrl + "/" + schema
-                + "?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+            String tenantUrl = buildSecureJdbcUrl(masterBaseUrl, schema);
             try (Connection conn = DriverManager.getConnection(
                     tenantUrl, masterUsername, masterPassword != null ? masterPassword : "")) {
                 ScriptUtils.executeSqlScript(conn, script);
@@ -357,8 +353,7 @@ public class EntrepriseService {
     public Long synchroniserUtilisateurDansTenant(String schemaName, com.benjeddou.erp.model.Utilisateur user) {
         if (schemaName == null || user == null) return null;
         String masterBaseUrl = extractBaseUrl(masterDbUrl);
-        String tenantUrl = masterBaseUrl + "/" + schemaName + "?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true";
-        
+        String tenantUrl = buildSecureJdbcUrl(masterBaseUrl, schemaName);
         boolean hasId = user.getId() != null;
         String syncUserSql = hasId
                 ? "INSERT INTO `" + schemaName + "`.utilisateurs " +
@@ -446,9 +441,11 @@ public class EntrepriseService {
             throw new IllegalArgumentException("Nom de schéma ou utilisateur invalide : " + schemaName);
         }
 
+
+
         // URL de connexion DIRECTE au serveur MySQL (sans nom de base)
         String masterBaseUrl = extractBaseUrl(masterDbUrl);
-        String directUrl = masterBaseUrl + "?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+        String directUrl = buildSecureJdbcUrl(masterBaseUrl, null);
         String masterPass = masterPassword != null ? masterPassword : "";
 
         // ── BLOC 1 : CREATE DATABASE ─────────────────────────────────────────────
@@ -539,8 +536,7 @@ public class EntrepriseService {
         // IMPORTANT : DriverManager.getConnection() et NON masterDataSource.getConnection()
         // HikariCP ne reset pas le catalog → ne jamais utiliser setCatalog() sur le master pool
         String baseUrl = extractBaseUrl(masterDbUrl);
-        String tenantUrl = baseUrl + "/" + schemaName
-            + "?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+        String tenantUrl = buildSecureJdbcUrl(baseUrl, schemaName);
 
         try (Connection conn = DriverManager.getConnection(
                 tenantUrl, masterUsername, masterPassword != null ? masterPassword : "")) {
@@ -586,6 +582,29 @@ public class EntrepriseService {
         RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
+
+
+
+    /**
+     * Construit une URL JDBC sécurisée pour TiDB Cloud.
+     * Toutes les connexions doivent utiliser TLS/SSL.
+     */
+    private String buildSecureJdbcUrl(String baseUrl, String schemaName) {
+        String url = baseUrl;
+
+        if (schemaName != null && !schemaName.isBlank()) {
+            url += "/" + schemaName;
+        }
+
+        return url
+                + "?sslMode=VERIFY_IDENTITY"
+                + "&enabledTLSProtocols=TLSv1.2,TLSv1.3"
+                + "&serverTimezone=UTC"
+                + "&allowPublicKeyRetrieval=true";
+    }
+
+
+
 
     /**
      * Extrait l'URL de base JDBC sans le nom de la base ni les paramètres.
