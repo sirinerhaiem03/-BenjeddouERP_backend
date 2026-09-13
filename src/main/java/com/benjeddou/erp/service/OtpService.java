@@ -1,12 +1,8 @@
 package com.benjeddou.erp.service;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
-import jakarta.mail.internet.MimeMessage;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Map;
@@ -16,6 +12,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Service OTP — génère, stocke en mémoire et envoie par email un code à 6 chiffres.
  * Expiration : 10 minutes.
+ *
+ * Envoi via BrevoEmailService (API HTTP) au lieu de JavaMailSender (SMTP),
+ * car le plan gratuit de Render bloque les ports SMTP sortants (25, 465, 587).
  */
 @Service
 public class OtpService {
@@ -27,15 +26,12 @@ public class OtpService {
     private final Map<String, OtpEntry> otpStore = new ConcurrentHashMap<>();
 
     @Autowired
-    private JavaMailSender mailSender;
-
-    @Value("${spring.mail.username}")
-    private String fromEmail;
+    private BrevomailService brevoEmailService;
 
     /**
      * Génère un OTP, le stocke en mémoire et tente l'envoi email en asynchrone.
      * Retourne le code généré pour permettre la continuité en environnement local/dev.
-     * En cas d'échec SMTP, le code reste 100% valide en mémoire.
+     * En cas d'échec d'envoi, le code reste 100% valide en mémoire.
      */
     public String genererEtEnvoyer(String email, String prenom) {
         String code = String.format("%06d", random.nextInt(1_000_000));
@@ -44,10 +40,8 @@ public class OtpService {
         // Envoi ASYNCHRONE par email uniquement — code non affiché dans la console
         CompletableFuture.runAsync(() -> {
             try {
-                if (mailSender != null) {
-                    envoyerEmail(email, prenom, code);
-                    System.out.println("[OtpService] ✅ Email de vérification envoyé à : " + email);
-                }
+                envoyerEmail(email, prenom, code);
+                System.out.println("[OtpService] ✅ Email de vérification envoyé à : " + email);
             } catch (Exception e) {
                 System.err.println("[OtpService] ⚠️ Erreur envoi email : " + e.getMessage());
             }
@@ -77,16 +71,10 @@ public class OtpService {
     // ─────────────────────────────────────────────
     //  Email HTML de vérification
     // ─────────────────────────────────────────────
-    private void envoyerEmail(String to, String prenom, String code) throws Exception {
-        MimeMessage message = mailSender.createMimeMessage();
-        MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-
-        helper.setFrom(fromEmail);
-        helper.setTo(to);
-        helper.setSubject("🔐 Votre code de vérification — BENJEDDOU ERP");
-        helper.setText(buildHtml(prenom, code), true);
-
-        mailSender.send(message);
+    private void envoyerEmail(String to, String prenom, String code) {
+        String subject = "🔐 Votre code de vérification — BENJEDDOU ERP";
+        String html = buildHtml(prenom, code);
+        brevoEmailService.envoyerEmail(to, prenom, subject, html);
     }
 
     private String buildHtml(String prenom, String code) {
