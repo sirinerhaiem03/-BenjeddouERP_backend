@@ -527,6 +527,13 @@ public class AdminController {
                     }
                 });
                 utilisateurRepository.save(client);
+                
+                // ── Notifier le client par email si son KYC est validé ──
+                emailService.envoyerNotificationValidationKyc(
+                    client.getEmail(),
+                    client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
+                );
+                
                 return ResponseEntity.ok(new MessageReponse(
                     "Client validé." + (activerTrial ? " Mode trial activé." : "")));
 
@@ -547,6 +554,13 @@ public class AdminController {
                 client.setActif(true);
                 client.setModeTrial(false);
                 utilisateurRepository.save(client);
+                
+                // ── Notifier le client par email si son abonnement est activé ──
+                emailService.envoyerNotificationValidationKyc(
+                    client.getEmail(),
+                    client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
+                );
+                
                 return ResponseEntity.ok(new MessageReponse("Compte client activé (abonnement payant)."));
 
             default:

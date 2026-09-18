@@ -183,8 +183,8 @@ public class ClientInscriptionController {
         }
 
         // ╔════════════════════════════════════════════════════════════
-        // Créer l'administrateur UNIQUEMENT dans la base de son entreprise (erp_ent_XXXXX.utilisateurs)
-        // La base master (benjeddou_erp.utilisateurs) contient STRICTEMENT ET UNIQUEMENT le Superadmin
+        // Créer le client dans la base MASTER pour l'accès Portail Client et KYC
+        // et l'Admin dans la base TENANT (erp_ent_XXXXX)
         // ╚════════════════════════════════════════════════════════════
         Utilisateur client = Utilisateur.builder()
             .nomUtilisateur(nomUtilisateur)
@@ -195,7 +195,7 @@ public class ClientInscriptionController {
             .telephone(telephone)
             .societe(societe)
             .adresse(adresse)
-            .role(Role.ADMIN)
+            .role(Role.CLIENT)
             .statutCompte(statut)
             .modeTrial(modeTrial)
             .nbUtilisations(0)
@@ -207,27 +207,17 @@ public class ClientInscriptionController {
             .entrepriseSchema(entreprise.getSchemaName())
             .build();
 
-        // Insertion EXCLUSIVE dans la table utilisateurs de la base dédiée de l'entreprise
+        // 1. Sauvegarde dans la base MASTER (pour visibilité Superadmin et KYC)
+        utilisateurRepository.save(client);
+
+        // 2. Synchronisation dans le tenant avec le rôle ADMIN (pour gestion ERP)
+        client.setRole(Role.ADMIN);
         Long adminUserId = entrepriseService.synchroniserUtilisateurDansTenant(entreprise.getSchemaName(), client);
         if (adminUserId != null) {
             entreprise.setAdminId(adminUserId);
             entrepriseRepository.save(entreprise);
         }
-        log.info("✓ Compte entreprise '{}' créé EXCLUSIVEMENT dans la base tenant '{}' (id={})", nomUtilisateur, entreprise.getSchemaName(), adminUserId);
-
-        // Nettoyage de sécurité : s'assurer qu'aucun utilisateur entreprise ne subsiste dans la base master
-        try {
-            utilisateurRepository.findByNomUtilisateur(nomUtilisateur).ifPresent(u -> {
-                if (u.getRole() != Role.SUPERADMIN) {
-                    utilisateurRepository.delete(u);
-                }
-            });
-            utilisateurRepository.findByEmail(email).ifPresent(u -> {
-                if (u.getRole() != Role.SUPERADMIN) {
-                    utilisateurRepository.delete(u);
-                }
-            });
-        } catch (Exception ignored) {}
+        log.info("✓ Compte entreprise '{}' créé dans MASTER et TENANT '{}' (id={})", nomUtilisateur, entreprise.getSchemaName(), adminUserId);
 
         String message = modeTrial
             ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites. Votre espace entreprise a été créé automatiquement."
