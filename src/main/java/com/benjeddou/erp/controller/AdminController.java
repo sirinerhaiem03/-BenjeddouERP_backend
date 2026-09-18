@@ -19,6 +19,9 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
+import com.benjeddou.erp.config.MasterTenantContext;
+import com.benjeddou.erp.service.EntrepriseService;
+import org.springframework.http.HttpStatus;
 
 import lombok.extern.slf4j.Slf4j;
 import java.sql.Connection;
@@ -76,6 +79,9 @@ public class AdminController {
 
     @Autowired
     com.benjeddou.erp.repository.ProduitRepository produitRepository;
+
+    @Autowired
+    EntrepriseService entrepriseService;
 
 
     // ── Créer un collaborateur interne ──────────────────────────
@@ -459,38 +465,71 @@ public class AdminController {
 
     // ══════════════════════════════════════════════════════════════
     //  GESTION DES CLIENTS — Cycle de vie KYC
+    //  Réservé à l'Admin Général (ERP 0000 - base Benjeddou) ou SuperAdmin
+    //  Toutes les opérations KYC s'exécutent sur la base MASTER
     // ══════════════════════════════════════════════════════════════
+
+    /**
+     * Vérifie si l'utilisateur est l'administrateur général (ERP 0000) ou Superadmin.
+     */
+    private boolean isAuthorizedGlobalAdmin() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) return false;
+
+        // 1. Superadmin plateforme
+        if (auth.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_SUPERADMIN"))) {
+            return true;
+        }
+
+        // 2. Admin général de l'entreprise mère Benjeddou (base 0000 / master)
+        if (auth.getPrincipal() instanceof UserDetailsImpl user) {
+            String schema = user.getEntrepriseSchema();
+            return schema == null
+                || schema.isBlank()
+                || "master".equalsIgnoreCase(schema)
+                || schema.contains("00000")
+                || schema.contains("0000");
+        }
+        return false;
+    }
 
     /** Liste tous les comptes CLIENT avec leur statut KYC */
     @GetMapping("/clients")
     @PreAuthorize("hasRole('ADMIN') or hasRole('SUPERADMIN')")
     public ResponseEntity<?> listerClients() {
-        List<Utilisateur> clients = utilisateurRepository.findByRole(Role.CLIENT);
+        if (!isAuthorizedGlobalAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new MessageReponse("Accès réservé à l'administrateur général (BEN JEDDOU ERP 0000)."));
+        }
 
-        List<Map<String, Object>> result = clients.stream().map(u -> {
-            long totalDocs     = documentKycRepository.countByUtilisateur(u);
-            long docsValides   = documentKycRepository.countByUtilisateurAndStatutVerification(u, "VALIDE");
-            long docsEnAttente = documentKycRepository.countByUtilisateurAndStatutVerification(u, "EN_ATTENTE");
+        return MasterTenantContext.run(() -> {
+            List<Utilisateur> clients = utilisateurRepository.findByRole(Role.CLIENT);
 
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id",            u.getId());
-            m.put("nomUtilisateur",u.getNomUtilisateur());
-            m.put("email",         u.getEmail());
-            m.put("prenom",        u.getPrenom()    != null ? u.getPrenom()    : "");
-            m.put("nom",           u.getNom()       != null ? u.getNom()       : "");
-            m.put("telephone",     u.getTelephone() != null ? u.getTelephone() : "");
-            m.put("societe",       u.getSociete()   != null ? u.getSociete()   : "");
-            m.put("statutCompte",  u.getStatutCompte() != null ? u.getStatutCompte().name() : "EN_ATTENTE");
-            m.put("kycSoumis",     Boolean.TRUE.equals(u.getKycSoumis()));
-            m.put("nbDocs",        totalDocs);
-            m.put("docsValides",   docsValides);
-            m.put("docsEnAttente", docsEnAttente);
-            m.put("dateCreation",  u.getDateCreation() != null ? u.getDateCreation().toString() : "");
-            m.put("modeTrial",     Boolean.TRUE.equals(u.getModeTrial()));
-            return m;
-        }).collect(Collectors.toList());
+            List<Map<String, Object>> result = clients.stream().map(u -> {
+                long totalDocs     = documentKycRepository.countByUtilisateur(u);
+                long docsValides   = documentKycRepository.countByUtilisateurAndStatutVerification(u, "VALIDE");
+                long docsEnAttente = documentKycRepository.countByUtilisateurAndStatutVerification(u, "EN_ATTENTE");
 
-        return ResponseEntity.ok(result);
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id",            u.getId());
+                m.put("nomUtilisateur",u.getNomUtilisateur());
+                m.put("email",         u.getEmail());
+                m.put("prenom",        u.getPrenom()    != null ? u.getPrenom()    : "");
+                m.put("nom",           u.getNom()       != null ? u.getNom()       : "");
+                m.put("telephone",     u.getTelephone() != null ? u.getTelephone() : "");
+                m.put("societe",       u.getSociete()   != null ? u.getSociete()   : "");
+                m.put("statutCompte",  u.getStatutCompte() != null ? u.getStatutCompte().name() : "EN_ATTENTE");
+                m.put("kycSoumis",     Boolean.TRUE.equals(u.getKycSoumis()));
+                m.put("nbDocs",        totalDocs);
+                m.put("docsValides",   docsValides);
+                m.put("docsEnAttente", docsEnAttente);
+                m.put("dateCreation",  u.getDateCreation() != null ? u.getDateCreation().toString() : "");
+                m.put("modeTrial",     Boolean.TRUE.equals(u.getModeTrial()));
+                return m;
+            }).collect(Collectors.toList());
+
+            return ResponseEntity.ok(result);
+        });
     }
 
     /** Valider ou refuser un client après vérification KYC */
@@ -502,95 +541,144 @@ public class AdminController {
             @RequestParam(defaultValue = "false") boolean activerTrial,
             @RequestParam(defaultValue = "30") int nbMaxTrial) {
 
-        Optional<Utilisateur> userOpt = utilisateurRepository.findById(id);
-        if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
-
-        Utilisateur client = userOpt.get();
-        if (client.getRole() != Role.CLIENT) {
-            return ResponseEntity.badRequest()
-                .body(new MessageReponse("Cet utilisateur n'est pas un client."));
+        if (!isAuthorizedGlobalAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new MessageReponse("Accès réservé à l'administrateur général (BEN JEDDOU ERP 0000)."));
         }
 
-        switch (decision.toUpperCase()) {
-            case "VALIDE":
-                client.setStatutCompte(StatutCompte.VALIDE);
-                client.setActif(true);
-                if (activerTrial) {
-                    client.setModeTrial(true);
-                    client.setNbUtilisationsMax(nbMaxTrial);
-                    client.setNbUtilisations(0);
-                }
-                documentKycRepository.findByUtilisateur(client).forEach(doc -> {
-                    if ("EN_ATTENTE".equals(doc.getStatutVerification())) {
-                        doc.setStatutVerification("VALIDE");
-                        documentKycRepository.save(doc);
-                    }
-                });
-                utilisateurRepository.save(client);
-                
-                // ── Notifier le client par email si son KYC est validé ──
-                emailService.envoyerNotificationValidationKyc(
-                    client.getEmail(),
-                    client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
-                );
-                
-                return ResponseEntity.ok(new MessageReponse(
-                    "Client validé." + (activerTrial ? " Mode trial activé." : "")));
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> userOpt = utilisateurRepository.findById(id);
+            if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
 
-            case "REFUSE":
-                client.setStatutCompte(StatutCompte.REFUSE);
-                client.setActif(false);
-                documentKycRepository.findByUtilisateur(client).forEach(doc -> {
-                    if ("EN_ATTENTE".equals(doc.getStatutVerification())) {
-                        doc.setStatutVerification("REFUSE");
-                        documentKycRepository.save(doc);
-                    }
-                });
-                utilisateurRepository.save(client);
-                return ResponseEntity.ok(new MessageReponse("Client refusé."));
-
-            case "ACTIF":
-                client.setStatutCompte(StatutCompte.ACTIF);
-                client.setActif(true);
-                client.setModeTrial(false);
-                utilisateurRepository.save(client);
-                
-                // ── Notifier le client par email si son abonnement est activé ──
-                emailService.envoyerNotificationValidationKyc(
-                    client.getEmail(),
-                    client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
-                );
-                
-                return ResponseEntity.ok(new MessageReponse("Compte client activé (abonnement payant)."));
-
-            default:
+            Utilisateur client = userOpt.get();
+            if (client.getRole() != Role.CLIENT) {
                 return ResponseEntity.badRequest()
-                    .body(new MessageReponse("Décision invalide. Valeurs : VALIDE, REFUSE, ACTIF"));
-        }
+                    .body(new MessageReponse("Cet utilisateur n'est pas un client."));
+            }
+
+            switch (decision.toUpperCase()) {
+                case "VALIDE":
+                    client.setStatutCompte(StatutCompte.VALIDE);
+                    client.setActif(true);
+                    if (activerTrial) {
+                        client.setModeTrial(true);
+                        client.setNbUtilisationsMax(nbMaxTrial);
+                        client.setNbUtilisations(0);
+                    }
+                    documentKycRepository.findByUtilisateur(client).forEach(doc -> {
+                        if ("EN_ATTENTE".equals(doc.getStatutVerification())) {
+                            doc.setStatutVerification("VALIDE");
+                            documentKycRepository.save(doc);
+                        }
+                    });
+                    utilisateurRepository.save(client);
+
+                    // Synchroniser aussi dans la base tenant de l'entreprise s'il y a un schéma
+                    if (client.getEntrepriseSchema() != null && !client.getEntrepriseSchema().isBlank()) {
+                        try {
+                            Role roleOriginal = client.getRole();
+                            client.setRole(Role.ADMIN);
+                            entrepriseService.synchroniserUtilisateurDansTenant(client.getEntrepriseSchema(), client);
+                            client.setRole(roleOriginal);
+                        } catch (Exception ex) {
+                            log.warn("Erreur synchronisation tenant client validé : {}", ex.getMessage());
+                        }
+                    }
+
+                    // ── Notifier le client par email si son KYC est validé ──
+                    emailService.envoyerNotificationValidationKyc(
+                        client.getEmail(),
+                        client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
+                    );
+
+                    return ResponseEntity.ok(new MessageReponse(
+                        "Client validé." + (activerTrial ? " Mode trial activé." : "")));
+
+                case "REFUSE":
+                    client.setStatutCompte(StatutCompte.REFUSE);
+                    client.setActif(false);
+                    documentKycRepository.findByUtilisateur(client).forEach(doc -> {
+                        if ("EN_ATTENTE".equals(doc.getStatutVerification())) {
+                            doc.setStatutVerification("REFUSE");
+                            documentKycRepository.save(doc);
+                        }
+                    });
+                    utilisateurRepository.save(client);
+
+                    if (client.getEntrepriseSchema() != null && !client.getEntrepriseSchema().isBlank()) {
+                        try {
+                            Role roleOriginal = client.getRole();
+                            client.setRole(Role.ADMIN);
+                            entrepriseService.synchroniserUtilisateurDansTenant(client.getEntrepriseSchema(), client);
+                            client.setRole(roleOriginal);
+                        } catch (Exception ex) {
+                            log.warn("Erreur synchronisation tenant client refusé : {}", ex.getMessage());
+                        }
+                    }
+
+                    return ResponseEntity.ok(new MessageReponse("Client refusé."));
+
+                case "ACTIF":
+                    client.setStatutCompte(StatutCompte.ACTIF);
+                    client.setActif(true);
+                    client.setModeTrial(false);
+                    utilisateurRepository.save(client);
+
+                    if (client.getEntrepriseSchema() != null && !client.getEntrepriseSchema().isBlank()) {
+                        try {
+                            Role roleOriginal = client.getRole();
+                            client.setRole(Role.ADMIN);
+                            entrepriseService.synchroniserUtilisateurDansTenant(client.getEntrepriseSchema(), client);
+                            client.setRole(roleOriginal);
+                        } catch (Exception ex) {
+                            log.warn("Erreur synchronisation tenant client activé : {}", ex.getMessage());
+                        }
+                    }
+
+                    // ── Notifier le client par email si son abonnement est activé ──
+                    emailService.envoyerNotificationValidationKyc(
+                        client.getEmail(),
+                        client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur()
+                    );
+
+                    return ResponseEntity.ok(new MessageReponse("Compte client activé (abonnement payant)."));
+
+                default:
+                    return ResponseEntity.badRequest()
+                        .body(new MessageReponse("Décision invalide. Valeurs : VALIDE, REFUSE, ACTIF"));
+            }
+        });
     }
 
     /** Documents KYC d'un client */
     @GetMapping("/clients/{id}/kyc")
     @PreAuthorize("hasRole('ADMIN') or hasRole('SUPERADMIN')")
     public ResponseEntity<?> voirKycClient(@PathVariable Long id) {
-        Optional<Utilisateur> userOpt = utilisateurRepository.findById(id);
-        if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
-        List<DocumentKyc> docs = documentKycRepository
-            .findByUtilisateurOrderByDateSoumissionDesc(userOpt.get());
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (DocumentKyc doc : docs) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id",                  doc.getId());
-            m.put("typeDocument",        doc.getTypeDocument());
-            m.put("nomFichier",          doc.getNomFichier());
-            m.put("contentType",         doc.getContentType() != null ? doc.getContentType() : "application/octet-stream");
-            m.put("tailleFichier",       doc.getContenuFichier() != null ? doc.getContenuFichier().length : 0);
-            m.put("statutVerification",  doc.getStatutVerification());
-            m.put("dateSoumission",      doc.getDateSoumission() != null ? doc.getDateSoumission().toString() : "");
-            m.put("viewUrl",             "/api/client/kyc/document/" + doc.getId());
-            result.add(m);
+        if (!isAuthorizedGlobalAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new MessageReponse("Accès réservé à l'administrateur général (BEN JEDDOU ERP 0000)."));
         }
-        return ResponseEntity.ok(result);
+
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> userOpt = utilisateurRepository.findById(id);
+            if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
+            List<DocumentKyc> docs = documentKycRepository
+                .findByUtilisateurOrderByDateSoumissionDesc(userOpt.get());
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (DocumentKyc doc : docs) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id",                  doc.getId());
+                m.put("typeDocument",        doc.getTypeDocument());
+                m.put("nomFichier",          doc.getNomFichier());
+                m.put("contentType",         doc.getContentType() != null ? doc.getContentType() : "application/octet-stream");
+                m.put("tailleFichier",       doc.getContenuFichier() != null ? doc.getContenuFichier().length : 0);
+                m.put("statutVerification",  doc.getStatutVerification());
+                m.put("dateSoumission",      doc.getDateSoumission() != null ? doc.getDateSoumission().toString() : "");
+                m.put("viewUrl",             "/api/client/kyc/document/" + doc.getId());
+                result.add(m);
+            }
+            return ResponseEntity.ok(result);
+        });
     }
 
     /** Valider ou refuser un document KYC individuel */
@@ -600,32 +688,39 @@ public class AdminController {
             @PathVariable Long docId,
             @RequestParam String decision) {
 
-        Optional<DocumentKyc> docOpt = documentKycRepository.findById(docId);
-        if (docOpt.isEmpty()) return ResponseEntity.notFound().build();
-
-        String statut = decision.toUpperCase();
-        if (!statut.equals("VALIDE") && !statut.equals("REFUSE") && !statut.equals("EN_ATTENTE")) {
-            return ResponseEntity.badRequest()
-                .body(new MessageReponse("Décision invalide. Valeurs : VALIDE, REFUSE, EN_ATTENTE"));
+        if (!isAuthorizedGlobalAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new MessageReponse("Accès réservé à l'administrateur général (BEN JEDDOU ERP 0000)."));
         }
 
-        DocumentKyc doc = docOpt.get();
-        doc.setStatutVerification(statut);
-        documentKycRepository.save(doc);
+        return MasterTenantContext.run(() -> {
+            Optional<DocumentKyc> docOpt = documentKycRepository.findById(docId);
+            if (docOpt.isEmpty()) return ResponseEntity.notFound().build();
 
-        // Recalculer les compteurs pour mettre à jour la liste client
-        Utilisateur client = doc.getUtilisateur();
-        List<DocumentKyc> allDocs = documentKycRepository.findByUtilisateur(client);
-        long valides   = allDocs.stream().filter(d -> "VALIDE".equals(d.getStatutVerification())).count();
-        long enAttente = allDocs.stream().filter(d -> "EN_ATTENTE".equals(d.getStatutVerification())).count();
+            String statut = decision.toUpperCase();
+            if (!statut.equals("VALIDE") && !statut.equals("REFUSE") && !statut.equals("EN_ATTENTE")) {
+                return ResponseEntity.badRequest()
+                    .body(new MessageReponse("Décision invalide. Valeurs : VALIDE, REFUSE, EN_ATTENTE"));
+            }
 
-        Map<String, Object> resp = new LinkedHashMap<>();
-        resp.put("message",      "Document " + statut.toLowerCase() + " avec succès.");
-        resp.put("documentId",   docId);
-        resp.put("statut",       statut);
-        resp.put("docsValides",  valides);
-        resp.put("docsEnAttente",enAttente);
-        return ResponseEntity.ok(resp);
+            DocumentKyc doc = docOpt.get();
+            doc.setStatutVerification(statut);
+            documentKycRepository.save(doc);
+
+            // Recalculer les compteurs pour mettre à jour la liste client
+            Utilisateur client = doc.getUtilisateur();
+            List<DocumentKyc> allDocs = documentKycRepository.findByUtilisateur(client);
+            long valides   = allDocs.stream().filter(d -> "VALIDE".equals(d.getStatutVerification())).count();
+            long enAttente = allDocs.stream().filter(d -> "EN_ATTENTE".equals(d.getStatutVerification())).count();
+
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("message",      "Document " + statut.toLowerCase() + " avec succès.");
+            resp.put("documentId",   docId);
+            resp.put("statut",       statut);
+            resp.put("docsValides",  valides);
+            resp.put("docsEnAttente",enAttente);
+            return ResponseEntity.ok(resp);
+        });
     }
 
     // ── Statistiques du Dashboard Admin ───────────────────────────────

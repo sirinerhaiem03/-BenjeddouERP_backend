@@ -13,6 +13,7 @@ import org.springframework.http.*;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import com.benjeddou.erp.config.MasterTenantContext;
 
 import java.io.IOException;
 import java.util.*;
@@ -292,30 +293,32 @@ public class ClientInscriptionController {
      */
     @GetMapping("/kyc/{userId}")
     public ResponseEntity<?> getDocumentsKyc(@PathVariable Long userId) {
-        Optional<Utilisateur> userOpt = utilisateurRepository.findById(userId);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> userOpt = utilisateurRepository.findById(userId);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
 
-        List<DocumentKyc> docs = documentKycRepository
-            .findByUtilisateurOrderByDateSoumissionDesc(userOpt.get());
+            List<DocumentKyc> docs = documentKycRepository
+                .findByUtilisateurOrderByDateSoumissionDesc(userOpt.get());
 
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (DocumentKyc doc : docs) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id",               doc.getId());
-            m.put("typeDocument",     doc.getTypeDocument());
-            m.put("nomFichier",       doc.getNomFichier());
-            m.put("contentType",      doc.getContentType());
-            m.put("tailleFichier",    doc.getContenuFichier() != null ? doc.getContenuFichier().length : 0);
-            m.put("statutVerification", doc.getStatutVerification());
-            m.put("dateSoumission",   doc.getDateSoumission() != null ? doc.getDateSoumission().toString() : "");
-            m.put("commentaireAdmin", doc.getCommentaireAdmin() != null ? doc.getCommentaireAdmin() : "");
-            // URL pour voir/télécharger depuis la base
-            m.put("viewUrl", "/api/client/kyc/document/" + doc.getId());
-            result.add(m);
-        }
-        return ResponseEntity.ok(result);
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (DocumentKyc doc : docs) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id",               doc.getId());
+                m.put("typeDocument",     doc.getTypeDocument());
+                m.put("nomFichier",       doc.getNomFichier());
+                m.put("contentType",      doc.getContentType());
+                m.put("tailleFichier",    doc.getContenuFichier() != null ? doc.getContenuFichier().length : 0);
+                m.put("statutVerification", doc.getStatutVerification());
+                m.put("dateSoumission",   doc.getDateSoumission() != null ? doc.getDateSoumission().toString() : "");
+                m.put("commentaireAdmin", doc.getCommentaireAdmin() != null ? doc.getCommentaireAdmin() : "");
+                // URL pour voir/télécharger depuis la base
+                m.put("viewUrl", "/api/client/kyc/document/" + doc.getId());
+                result.add(m);
+            }
+            return ResponseEntity.ok(result);
+        });
     }
 
     /**
@@ -323,32 +326,34 @@ public class ClientInscriptionController {
      */
     @GetMapping("/kyc/document/{docId}")
     public ResponseEntity<byte[]> voirDocument(@PathVariable Long docId) {
-        Optional<DocumentKyc> docOpt = documentKycRepository.findById(docId);
-        if (docOpt.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+        return MasterTenantContext.run(() -> {
+            Optional<DocumentKyc> docOpt = documentKycRepository.findById(docId);
+            if (docOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
 
-        DocumentKyc doc = docOpt.get();
-        byte[] contenu = doc.getContenuFichier();
+            DocumentKyc doc = docOpt.get();
+            byte[] contenu = doc.getContenuFichier();
 
-        if (contenu == null || contenu.length == 0) {
-            return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
-        }
+            if (contenu == null || contenu.length == 0) {
+                return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
+            }
 
-        String contentType = doc.getContentType() != null
-            ? doc.getContentType()
-            : "application/octet-stream";
+            String contentType = doc.getContentType() != null
+                ? doc.getContentType()
+                : "application/octet-stream";
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.parseMediaType(contentType));
-        // inline = afficher dans le navigateur ; attachment = forcer téléchargement
-        headers.setContentDisposition(
-            ContentDisposition.inline()
-                .filename(doc.getNomFichier() != null ? doc.getNomFichier() : "document")
-                .build()
-        );
-        headers.setContentLength(contenu.length);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(contentType));
+            // inline = afficher dans le navigateur ; attachment = forcer téléchargement
+            headers.setContentDisposition(
+                ContentDisposition.inline()
+                    .filename(doc.getNomFichier() != null ? doc.getNomFichier() : "document")
+                    .build()
+            );
+            headers.setContentLength(contenu.length);
 
-        return new ResponseEntity<>(contenu, headers, HttpStatus.OK);
+            return new ResponseEntity<>(contenu, headers, HttpStatus.OK);
+        });
     }
 }

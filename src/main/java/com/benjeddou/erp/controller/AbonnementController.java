@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 import org.springframework.transaction.annotation.Transactional;
+import com.benjeddou.erp.config.MasterTenantContext;
 
 /**
  * Gestion des souscriptions et abonnements.
@@ -187,32 +188,36 @@ public class AbonnementController {
     /** Admin : liste tous les abonnements */
     @GetMapping("/admin/tous")
     public ResponseEntity<?> tousLesAbonnements() {
-        try {
-            List<Abonnement> all = abonnementRepository.findAllByOrderByDateSoumissionDesc();
-            if (all == null) all = Collections.emptyList();
-            List<Map<String, Object>> result = all.stream()
-                .filter(Objects::nonNull)
-                .map(this::buildAbonnementMap)
-                .toList();
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.ok(Collections.emptyList());
-        }
+        return MasterTenantContext.run(() -> {
+            try {
+                List<Abonnement> all = abonnementRepository.findAllByOrderByDateSoumissionDesc();
+                if (all == null) all = Collections.emptyList();
+                List<Map<String, Object>> result = all.stream()
+                    .filter(Objects::nonNull)
+                    .map(this::buildAbonnementMap)
+                    .toList();
+                return ResponseEntity.ok(result);
+            } catch (Exception e) {
+                e.printStackTrace();
+                return ResponseEntity.ok(Collections.emptyList());
+            }
+        });
     }
 
     /** Admin : liste les abonnements EN_ATTENTE */
     @GetMapping("/admin/en-attente")
     public ResponseEntity<?> enAttente() {
-        try {
-            List<Abonnement> list = abonnementRepository
-                .findByStatutOrderByDateSoumissionDesc(StatutAbonnement.EN_ATTENTE);
-            if (list == null) list = Collections.emptyList();
-            return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.ok(Collections.emptyList());
-        }
+        return MasterTenantContext.run(() -> {
+            try {
+                List<Abonnement> list = abonnementRepository
+                    .findByStatutOrderByDateSoumissionDesc(StatutAbonnement.EN_ATTENTE);
+                if (list == null) list = Collections.emptyList();
+                return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
+            } catch (Exception e) {
+                e.printStackTrace();
+                return ResponseEntity.ok(Collections.emptyList());
+            }
+        });
     }
 
     /** Admin : valider ou refuser un abonnement et activer le compte */
@@ -223,65 +228,69 @@ public class AbonnementController {
             @RequestParam String decision,
             @RequestParam(defaultValue = "") String notes) {
 
-        Optional<Abonnement> abOpt = abonnementRepository.findById(id);
-        if (abOpt.isEmpty()) return ResponseEntity.notFound().build();
+        return MasterTenantContext.run(() -> {
+            Optional<Abonnement> abOpt = abonnementRepository.findById(id);
+            if (abOpt.isEmpty()) return ResponseEntity.notFound().build();
 
-        Abonnement ab = abOpt.get();
+            Abonnement ab = abOpt.get();
 
-        switch (decision.toUpperCase()) {
-            case "VALIDER" -> {
-                ab.setStatut(StatutAbonnement.ACTIF);
-                ab.setDateDebut(LocalDateTime.now());
-                ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois() > 0 ? ab.getDureeMois() : 1));
-                ab.setNotesAdmin(notes);
+            switch (decision.toUpperCase()) {
+                case "VALIDER" -> {
+                    ab.setStatut(StatutAbonnement.ACTIF);
+                    ab.setDateDebut(LocalDateTime.now());
+                    ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois() > 0 ? ab.getDureeMois() : 1));
+                    ab.setNotesAdmin(notes);
 
-                // Activer le compte client
-                Utilisateur client = ab.getClient();
-                if (client != null) {
-                    client.setStatutCompte(StatutCompte.ACTIF);
-                    client.setActif(true);
-                    client.setModeTrial(false);
-                    client.setNbUtilisations(0);
-                    utilisateurRepository.save(client);
+                    // Activer le compte client
+                    Utilisateur client = ab.getClient();
+                    if (client != null) {
+                        client.setStatutCompte(StatutCompte.ACTIF);
+                        client.setActif(true);
+                        client.setModeTrial(false);
+                        client.setNbUtilisations(0);
+                        utilisateurRepository.save(client);
+                    }
+                    abonnementRepository.save(ab);
+
+                    // ── Notifier le client par email ──
+                    if (client != null && client.getEmail() != null) {
+                        String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
+                        emailService.envoyerNotificationActivationCompte(
+                            client.getEmail(),
+                            client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
+                            ab.getTypePlan() != null ? ab.getTypePlan().name() : "MENSUEL",
+                            dateFin
+                        );
+                    }
+
+                    return ResponseEntity.ok(new MessageReponse(
+                        "Abonnement validé. Compte client activé avec succès."));
                 }
-                abonnementRepository.save(ab);
-
-                // ── Notifier le client par email ──
-                if (client != null && client.getEmail() != null) {
-                    String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
-                    emailService.envoyerNotificationActivationCompte(
-                        client.getEmail(),
-                        client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
-                        ab.getTypePlan() != null ? ab.getTypePlan().name() : "MENSUEL",
-                        dateFin
-                    );
+                case "REFUSER" -> {
+                    ab.setStatut(StatutAbonnement.ANNULE);
+                    ab.setNotesAdmin(notes);
+                    abonnementRepository.save(ab);
+                    return ResponseEntity.ok(new MessageReponse("Abonnement refusé."));
                 }
-
-                return ResponseEntity.ok(new MessageReponse(
-                    "Abonnement validé. Compte client activé avec succès."));
+                default -> {
+                    return ResponseEntity.badRequest()
+                        .body(new MessageReponse("Décision invalide. Valeurs : VALIDER, REFUSER"));
+                }
             }
-            case "REFUSER" -> {
-                ab.setStatut(StatutAbonnement.ANNULE);
-                ab.setNotesAdmin(notes);
-                abonnementRepository.save(ab);
-                return ResponseEntity.ok(new MessageReponse("Abonnement refusé."));
-            }
-            default -> {
-                return ResponseEntity.badRequest()
-                    .body(new MessageReponse("Décision invalide. Valeurs : VALIDER, REFUSER"));
-            }
-        }
+        });
     }
 
     /** Admin : abonnements d'un client spécifique */
     @GetMapping("/admin/client/{clientId}")
     public ResponseEntity<?> parClient(@PathVariable Long clientId) {
-        Optional<Utilisateur> userOpt = utilisateurRepository.findById(clientId);
-        if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
-        List<Abonnement> list = abonnementRepository
-            .findByClientOrderByDateSoumissionDesc(userOpt.get());
-        if (list == null) list = Collections.emptyList();
-        return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> userOpt = utilisateurRepository.findById(clientId);
+            if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
+            List<Abonnement> list = abonnementRepository
+                .findByClientOrderByDateSoumissionDesc(userOpt.get());
+            if (list == null) list = Collections.emptyList();
+            return ResponseEntity.ok(list.stream().filter(Objects::nonNull).map(this::buildAbonnementMap).toList());
+        });
     }
 
     // ── Helpers ──────────────────────────────────────────────────

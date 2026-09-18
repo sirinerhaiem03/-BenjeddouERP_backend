@@ -453,6 +453,8 @@ public class AuthController {
         reponse.setTrialExpiresAt(utilisateur.getTrialExpiresAt() != null
                 ? utilisateur.getTrialExpiresAt().toString() : null);
         reponse.setJoursTrialRestants(joursTrialRestants);
+        reponse.setEntrepriseSchema(utilisateur.getEntrepriseSchema());
+        reponse.setEntrepriseId(utilisateur.getEntrepriseId());
 
         // Audit log — login réussi
         auditService.log(ActionAudit.LOGIN_SUCCESS, ResultatAudit.SUCCES,
@@ -486,14 +488,14 @@ public class AuthController {
                     .body(new MessageReponse(e.getMessage()));
         }
 
+        Utilisateur userARefraichir = refreshToken.getUtilisateur();
         String newAccessToken = jwtUtils.generateJwtTokenFromUsername(
-                refreshToken.getUtilisateur().getNomUtilisateur());
+                userARefraichir.getNomUtilisateur(),
+                userARefraichir.getEntrepriseSchema(),
+                userARefraichir.getEntrepriseId());
 
         // Mettre à jour le tokenSession en DB
-        // SÉCURITÉ MULTI-TENANT : Restaurer le contexte tenant avant le save
-        // pour éviter d'écraser un enregistrement tenant en base master.
-        refreshToken.getUtilisateur().setTokenSession(newAccessToken);
-        Utilisateur userARefraichir = refreshToken.getUtilisateur();
+        userARefraichir.setTokenSession(newAccessToken);
         if (userARefraichir.getEntrepriseSchema() != null && !userARefraichir.getEntrepriseSchema().isBlank()) {
             String tenantActuel = com.benjeddou.erp.config.TenantContextHolder.getCurrentTenant();
             if (tenantActuel == null || !tenantActuel.equals(userARefraichir.getEntrepriseSchema())) {

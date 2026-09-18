@@ -43,6 +43,12 @@ public class JwtReponse {
     /** Nombre de jours restants dans la période d'essai */
     private Long joursTrialRestants;
 
+    /** Schéma multi-tenant de l'entreprise rattachée */
+    private String entrepriseSchema;
+
+    /** ID de l'entreprise rattachée */
+    private Long entrepriseId;
+
     public JwtReponse(String accessToken, Long id, String nomUtilisateur, String email,
                        String prenom, String nom, String languePreferee, List<String> roles,
                        String statutCompte, Boolean modeTrial, Integer utilisationsRestantes,
