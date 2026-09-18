@@ -36,20 +36,26 @@ public class ClientInscriptionController {
     // ══════════════════════════════════════════════════════════════
     @GetMapping("/check-username")
     public ResponseEntity<?> checkUsername(@RequestParam String username) {
-        Optional<Utilisateur> found = utilisateurRepository.findByNomUtilisateur(username);
-        boolean available = found.isEmpty()
-            || !Boolean.TRUE.equals(found.get().getActif())
-            || found.get().getStatutCompte() == StatutCompte.EN_ATTENTE;
-        return ResponseEntity.ok(Map.of("available", available));
+        // ⚠ Forcé sur MASTER : les comptes CLIENT sont dans la base master
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> found = utilisateurRepository.findByNomUtilisateur(username);
+            boolean available = found.isEmpty()
+                || !Boolean.TRUE.equals(found.get().getActif())
+                || found.get().getStatutCompte() == StatutCompte.EN_ATTENTE;
+            return ResponseEntity.ok(Map.of("available", available));
+        });
     }
 
     @GetMapping("/check-email")
     public ResponseEntity<?> checkEmail(@RequestParam String email) {
-        Optional<Utilisateur> found = utilisateurRepository.findByEmail(email);
-        boolean available = found.isEmpty()
-            || !Boolean.TRUE.equals(found.get().getActif())
-            || found.get().getStatutCompte() == StatutCompte.EN_ATTENTE;
-        return ResponseEntity.ok(Map.of("available", available));
+        // ⚠ Forcé sur MASTER : les comptes CLIENT sont dans la base master
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> found = utilisateurRepository.findByEmail(email);
+            boolean available = found.isEmpty()
+                || !Boolean.TRUE.equals(found.get().getActif())
+                || found.get().getStatutCompte() == StatutCompte.EN_ATTENTE;
+            return ResponseEntity.ok(Map.of("available", available));
+        });
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -64,8 +70,9 @@ public class ClientInscriptionController {
             return ResponseEntity.badRequest()
                 .body(new MessageReponse("Email requis."));
         }
-        // Vérifier si l'email est déjà utilisé
-        if (utilisateurRepository.existsByEmail(email)) {
+        // ⚠ Vérification dans la base MASTER
+        Boolean existeDeja = MasterTenantContext.run(() -> utilisateurRepository.existsByEmail(email));
+        if (Boolean.TRUE.equals(existeDeja)) {
             return ResponseEntity.badRequest()
                 .body(new MessageReponse("Cet email est déjà associé à un compte."));
         }
@@ -130,101 +137,135 @@ public class ClientInscriptionController {
                 .body(new MessageReponse("Champs obligatoires manquants."));
         }
 
-        // ── Supprimer les comptes non activés existants (tentatives précédentes) ──
-        Optional<Utilisateur> existingByUsername = utilisateurRepository.findByNomUtilisateur(nomUtilisateur);
-        if (existingByUsername.isPresent()) {
-            Utilisateur existing = existingByUsername.get();
-            boolean notActivated = !Boolean.TRUE.equals(existing.getActif())
-                || existing.getStatutCompte() == StatutCompte.EN_ATTENTE;
-            if (notActivated) {
-                // Supprimer les documents KYC liés avant de supprimer l'utilisateur
-                documentKycRepository.deleteAll(
-                    documentKycRepository.findByUtilisateur(existing)
-                );
-                utilisateurRepository.delete(existing);
-            } else {
-                return ResponseEntity.badRequest()
-                    .body(new MessageReponse("Ce nom d'utilisateur est déjà pris."));
+        // Variables finales pour lambda
+        final boolean finalModeTrial     = modeTrial;
+        final String  finalNomUtilisateur = nomUtilisateur;
+        final String  finalEmail          = email;
+        final String  finalMotDePasse     = motDePasse;
+        final String  finalPrenom         = prenom;
+        final String  finalNom            = nom;
+        final String  finalTelephone      = telephone;
+        final String  finalSociete        = societe;
+        final String  finalAdresse        = adresse;
+
+        // ╔═══════════════════════════════════════════════════════════════
+        // ⚠ TOUT le flux JPA s'exécute sur la base MASTER.
+        //   Raison : TenantFilter route les requêtes sans header tenant
+        //   vers erp_ent_00000 par défaut, mais les tables utilisateurs,
+        //   entreprises et documents_kyc n'existent QUE dans la base master.
+        //
+        //   La création de la BASE DÉDIÉE (erp_ent_XXXXX) et l'insertion
+        //   de l'utilisateur admin dedans utilisent DriverManager (JDBC
+        //   direct) et ne sont PAS affectées par ce contexte JPA.
+        // ╚═══════════════════════════════════════════════════════════════
+        return MasterTenantContext.run(() -> {
+
+            // ── Supprimer les comptes non activés existants (tentatives précédentes) ──
+            Optional<Utilisateur> existingByUsername = utilisateurRepository.findByNomUtilisateur(finalNomUtilisateur);
+            if (existingByUsername.isPresent()) {
+                Utilisateur existing = existingByUsername.get();
+                boolean notActivated = !Boolean.TRUE.equals(existing.getActif())
+                    || existing.getStatutCompte() == StatutCompte.EN_ATTENTE;
+                if (notActivated) {
+                    documentKycRepository.deleteAll(
+                        documentKycRepository.findByUtilisateur(existing)
+                    );
+                    utilisateurRepository.delete(existing);
+                } else {
+                    return ResponseEntity.badRequest()
+                        .body(new MessageReponse("Ce nom d'utilisateur est déjà pris."));
+                }
             }
-        }
 
-        Optional<Utilisateur> existingByEmail = utilisateurRepository.findByEmail(email);
-        if (existingByEmail.isPresent()) {
-            Utilisateur existing = existingByEmail.get();
-            boolean notActivated = !Boolean.TRUE.equals(existing.getActif())
-                || existing.getStatutCompte() == StatutCompte.EN_ATTENTE;
-            if (notActivated) {
-                documentKycRepository.deleteAll(
-                    documentKycRepository.findByUtilisateur(existing)
-                );
-                utilisateurRepository.delete(existing);
-            } else {
-                return ResponseEntity.badRequest()
-                    .body(new MessageReponse("Cet email est déjà utilisé par un compte actif."));
+            Optional<Utilisateur> existingByEmail = utilisateurRepository.findByEmail(finalEmail);
+            if (existingByEmail.isPresent()) {
+                Utilisateur existing = existingByEmail.get();
+                boolean notActivated = !Boolean.TRUE.equals(existing.getActif())
+                    || existing.getStatutCompte() == StatutCompte.EN_ATTENTE;
+                if (notActivated) {
+                    documentKycRepository.deleteAll(
+                        documentKycRepository.findByUtilisateur(existing)
+                    );
+                    utilisateurRepository.delete(existing);
+                } else {
+                    return ResponseEntity.badRequest()
+                        .body(new MessageReponse("Cet email est déjà utilisé par un compte actif."));
+                }
             }
-        }
 
-        // Statut selon le mode choisi
-        StatutCompte statut = modeTrial ? StatutCompte.ACTIF : StatutCompte.EN_ATTENTE;
+            // Statut selon le mode choisi
+            StatutCompte statut = finalModeTrial ? StatutCompte.ACTIF : StatutCompte.EN_ATTENTE;
 
-        // ╔════════════════════════════════════════════════════════════
-        // MULTI-TENANT : Créer la base de données dédiée de l'entreprise (erp_ent_XXXXX)
-        // ╚════════════════════════════════════════════════════════════
-        com.benjeddou.erp.model.Entreprise entreprise;
-        try {
-            entreprise = entrepriseService.creerEntreprise(
-                societe != null && !societe.isBlank() ? societe : nomUtilisateur,
-                email,
-                null
-            );
-        } catch (Exception ex) {
-            log.error("Erreur création base tenant pour '{}' : {}", nomUtilisateur, ex.getMessage(), ex);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new MessageReponse("Erreur création base entreprise : " + ex.getMessage()));
-        }
+            // ╔═══════════════════════════════════════════════════════════════
+            // MULTI-TENANT : Créer la base dédiée erp_ent_XXXXX
+            // creerEntreprise() utilise en interne :
+            //   - entrepriseRepository (JPA) → déjà dans MasterTenantContext ✓
+            //   - DriverManager (JDBC direct) pour CREATE DATABASE/USER/GRANT
+            //     → non affecté par le contexte JPA tenant ✓
+            // ╚═══════════════════════════════════════════════════════════════
+            com.benjeddou.erp.model.Entreprise entreprise;
+            try {
+                entreprise = entrepriseService.creerEntreprise(
+                    finalSociete != null && !finalSociete.isBlank() ? finalSociete : finalNomUtilisateur,
+                    finalEmail,
+                    null
+                );
+            } catch (Exception ex) {
+                log.error("Erreur création base tenant pour '{}' : {}", finalNomUtilisateur, ex.getMessage(), ex);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new MessageReponse("Erreur création base entreprise : " + ex.getMessage()));
+            }
 
-        // ╔════════════════════════════════════════════════════════════
-        // Créer le client dans la base MASTER pour l'accès Portail Client et KYC
-        // et l'Admin dans la base TENANT (erp_ent_XXXXX)
-        // ╚════════════════════════════════════════════════════════════
-        Utilisateur client = Utilisateur.builder()
-            .nomUtilisateur(nomUtilisateur)
-            .email(email)
-            .motDePasse(encoder.encode(motDePasse))
-            .prenom(prenom)
-            .nom(nom)
-            .telephone(telephone)
-            .societe(societe)
-            .adresse(adresse)
-            .role(Role.CLIENT)
-            .statutCompte(statut)
-            .modeTrial(modeTrial)
-            .nbUtilisations(0)
-            .nbUtilisationsMax(modeTrial ? 30 : 0)
-            .actif(modeTrial)
-            .kycSoumis(false)
-            .languePreferee("fr")
-            .entrepriseId(entreprise.getId())
-            .entrepriseSchema(entreprise.getSchemaName())
-            .build();
+            // ╔═══════════════════════════════════════════════════════════════
+            // Créer le client dans la base MASTER (pour KYC et portail client)
+            // ╚═══════════════════════════════════════════════════════════════
+            Utilisateur client = Utilisateur.builder()
+                .nomUtilisateur(finalNomUtilisateur)
+                .email(finalEmail)
+                .motDePasse(encoder.encode(finalMotDePasse))
+                .prenom(finalPrenom)
+                .nom(finalNom)
+                .telephone(finalTelephone)
+                .societe(finalSociete)
+                .adresse(finalAdresse)
+                .role(Role.CLIENT)
+                .statutCompte(statut)
+                .modeTrial(finalModeTrial)
+                .nbUtilisations(0)
+                .nbUtilisationsMax(finalModeTrial ? 30 : 0)
+                .actif(finalModeTrial)
+                .kycSoumis(false)
+                .languePreferee("fr")
+                .entrepriseId(entreprise.getId())
+                .entrepriseSchema(entreprise.getSchemaName())
+                .build();
 
-        // 1. Sauvegarde dans la base MASTER (pour visibilité Superadmin et KYC)
-        utilisateurRepository.save(client);
+            // 1. Sauvegarde dans la base MASTER (pour visibilité admin KYC)
+            utilisateurRepository.save(client);
 
-        // 2. Synchronisation dans le tenant avec le rôle ADMIN (pour gestion ERP)
-        client.setRole(Role.ADMIN);
-        Long adminUserId = entrepriseService.synchroniserUtilisateurDansTenant(entreprise.getSchemaName(), client);
-        if (adminUserId != null) {
-            entreprise.setAdminId(adminUserId);
-            entrepriseRepository.save(entreprise);
-        }
-        log.info("✓ Compte entreprise '{}' créé dans MASTER et TENANT '{}' (id={})", nomUtilisateur, entreprise.getSchemaName(), adminUserId);
+            // 2. Synchronisation dans le tenant avec le rôle ADMIN
+            //    → DriverManager (JDBC direct), non affecté par MasterTenantContext
+            client.setRole(Role.ADMIN);
+            Long adminUserId = entrepriseService.synchroniserUtilisateurDansTenant(entreprise.getSchemaName(), client);
+            client.setRole(Role.CLIENT); // Restaurer rôle CLIENT en master
 
-        String message = modeTrial
-            ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites. Votre espace entreprise a été créé automatiquement."
-            : "Inscription réussie ! Votre compte est en attente de validation KYC.";
+            if (adminUserId != null) {
+                entreprise.setAdminId(adminUserId);
+                entrepriseRepository.save(entreprise);
+            }
 
-        return ResponseEntity.ok(new MessageReponse(message));
+            // Mettre à jour l'utilisateur en master avec les infos finales
+            utilisateurRepository.save(client);
+
+            log.info("✓ Compte '{}' créé dans MASTER et TENANT '{}' (adminId={})",
+                finalNomUtilisateur, entreprise.getSchemaName(), adminUserId);
+
+            String message = finalModeTrial
+                ? "Inscription réussie ! Vous disposez de 30 connexions d'essai gratuites. Votre espace entreprise a été créé automatiquement."
+                : "Inscription réussie ! Votre compte est en attente de validation KYC.";
+
+            return ResponseEntity.ok(new MessageReponse(message));
+        });
     }
 
     /**
@@ -236,39 +277,49 @@ public class ClientInscriptionController {
             @RequestParam("typeDocument") String typeDocument,
             @RequestParam("fichier") MultipartFile fichier) {
 
-        Optional<Utilisateur> userOpt = utilisateurRepository.findByNomUtilisateur(nomUtilisateur);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(new MessageReponse("Utilisateur introuvable."));
-        }
-
-        Utilisateur client = userOpt.get();
-        if (client.getRole() != Role.CLIENT) {
-            return ResponseEntity.badRequest()
-                .body(new MessageReponse("Cette fonctionnalité est réservée aux clients."));
-        }
-
+        // Lire le fichier AVANT d'entrer dans le lambda (MultipartFile non sérialisable)
+        final byte[] contenuFinal;
+        final String contentTypeFinal;
+        final String origNameFinal;
         try {
-            byte[] contenu = fichier.getBytes();
-            String contentType = fichier.getContentType();
-            if (contentType == null) contentType = "application/octet-stream";
+            contenuFinal  = fichier.getBytes();
+            String ct     = fichier.getContentType();
+            if (ct == null) ct = "application/octet-stream";
+            String on = fichier.getOriginalFilename();
+            if (on != null) {
+                String lower = on.toLowerCase();
+                if (lower.endsWith(".pdf"))                       ct = "application/pdf";
+                if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) ct = "image/jpeg";
+                if (lower.endsWith(".png"))                       ct = "image/png";
+            }
+            contentTypeFinal = ct;
+            origNameFinal    = on;
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new MessageReponse("Erreur lecture fichier : " + e.getMessage()));
+        }
 
-            // Détecter le content type depuis l'extension si null
-            String origName = fichier.getOriginalFilename();
-            if (origName != null) {
-                String lower = origName.toLowerCase();
-                if (lower.endsWith(".pdf"))  contentType = "application/pdf";
-                if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) contentType = "image/jpeg";
-                if (lower.endsWith(".png"))  contentType = "image/png";
+        // ⚠ Toutes les opérations JPA sur MASTER
+        return MasterTenantContext.run(() -> {
+            Optional<Utilisateur> userOpt = utilisateurRepository.findByNomUtilisateur(nomUtilisateur);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new MessageReponse("Utilisateur introuvable."));
             }
 
-            // Sauvegarder le document avec le contenu binaire en base
+            Utilisateur client = userOpt.get();
+            if (client.getRole() != Role.CLIENT) {
+                return ResponseEntity.badRequest()
+                    .body(new MessageReponse("Cette fonctionnalité est réservée aux clients."));
+            }
+
+            // Sauvegarder le document dans la base MASTER
             DocumentKyc doc = DocumentKyc.builder()
                 .utilisateur(client)
                 .typeDocument(typeDocument)
-                .nomFichier(origName != null ? origName : typeDocument)
-                .contentType(contentType)
-                .contenuFichier(contenu)
+                .nomFichier(origNameFinal != null ? origNameFinal : typeDocument)
+                .contentType(contentTypeFinal)
+                .contenuFichier(contenuFinal)
                 .statutVerification("EN_ATTENTE")
                 .build();
 
@@ -281,11 +332,7 @@ public class ClientInscriptionController {
 
             return ResponseEntity.ok(new MessageReponse(
                 "Document '" + typeDocument + "' soumis avec succès."));
-
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new MessageReponse("Erreur lors de l'upload : " + e.getMessage()));
-        }
+        });
     }
 
     /**
