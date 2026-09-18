@@ -1,5 +1,6 @@
 package com.benjeddou.erp.controller;
 
+import com.benjeddou.erp.config.MasterTenantContext;
 import com.benjeddou.erp.model.*;
 import com.benjeddou.erp.payload.response.MessageReponse;
 import com.benjeddou.erp.repository.AbonnementRepository;
@@ -188,95 +189,103 @@ public class StripeController {
                 "Stripe non configuré. Ajoutez stripe.secret.key dans application.properties."));
         }
 
-        try {
-            Stripe.apiKey = stripeSecretKey;
+        Stripe.apiKey = stripeSecretKey;
 
-            Long clientId   = Long.valueOf(body.get("clientId").toString());
-            String typePlan = body.get("typePlan").toString().toUpperCase();
+        Long clientId   = Long.valueOf(body.get("clientId").toString());
+        String typePlan = body.get("typePlan").toString().toUpperCase();
 
-            Optional<Utilisateur> userOpt = utilisateurRepository.findById(clientId);
-            if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
-            Utilisateur client = userOpt.get();
-
-            // Prix et durée selon le plan
-            long prixCentimes;
-            int  dureeMois;
-            String nomPlan;
-            switch (typePlan) {
-                case "MENSUEL"      -> { prixCentimes = 9900L;   dureeMois = 1;  nomPlan = "Plan Mensuel — BENJEDDOU ERP"; }
-                case "TRIMESTRIEL"  -> { prixCentimes = 24900L;  dureeMois = 3;  nomPlan = "Plan Trimestriel — BENJEDDOU ERP"; }
-                case "ANNUEL"       -> { prixCentimes = 79900L;  dureeMois = 12; nomPlan = "Plan Annuel — BENJEDDOU ERP"; }
-                default             -> { prixCentimes = 9900L;   dureeMois = 1;  nomPlan = "Plan Mensuel — BENJEDDOU ERP"; }
-            }
-
-            // Créer l'abonnement en base AVANT la redirection (statut EN_ATTENTE)
-            // Vérifier si l'utilisateur a déjà un abonnement en attente
-            List<Abonnement> existing = abonnementRepository.findByClientOrderByDateSoumissionDesc(client);
-            boolean hasActive = existing.stream().anyMatch(a ->
-                a.getStatut() == StatutAbonnement.ACTIF ||
-                a.getStatut() == StatutAbonnement.EN_ATTENTE ||
-                a.getStatut() == StatutAbonnement.VALIDE
-            );
-            if (hasActive) {
-                return ResponseEntity.badRequest()
-                    .body(new MessageReponse("Vous avez déjà un abonnement actif ou en cours."));
-            }
-
-            // Enregistrer l'abonnement en attente de paiement Stripe
-            TypePlanAbonnement planEnum = TypePlanAbonnement.valueOf(typePlan);
-            BigDecimal prix = BigDecimal.valueOf(prixCentimes).divide(BigDecimal.valueOf(100));
-            Abonnement abonnement = Abonnement.builder()
-                .client(client)
-                .typePlan(planEnum)
-                .prix(prix)
-                .dureeMois(dureeMois)
-                .statut(StatutAbonnement.EN_ATTENTE)
-                .methodePaiement("STRIPE")
-                .build();
-            abonnement = abonnementRepository.save(abonnement);
-
-            // Construire la session Stripe Checkout
-            SessionCreateParams params = SessionCreateParams.builder()
-                .setMode(SessionCreateParams.Mode.PAYMENT)
-                .setSuccessUrl(successUrl + "?session_id={CHECKOUT_SESSION_ID}&abonnement_id=" + abonnement.getId())
-                .setCancelUrl(cancelUrl)
-                .addLineItem(
-                    SessionCreateParams.LineItem.builder()
-                        .setQuantity(1L)
-                        .setPriceData(
-                            SessionCreateParams.LineItem.PriceData.builder()
-                                .setCurrency("eur")           // Stripe Checkout exige une devise — adaptez selon votre pays
-                                .setUnitAmount(prixCentimes)  // centimes
-                                .setProductData(
-                                    SessionCreateParams.LineItem.PriceData.ProductData.builder()
-                                        .setName(nomPlan)
-                                        .setDescription(dureeMois + " mois d'accès complet à BENJEDDOU ERP")
-                                        .addImage("https://via.placeholder.com/100x100/f97316/ffffff?text=ERP")
-                                        .build()
-                                )
-                                .build()
-                        )
-                        .build()
-                )
-                // Metadata pour le webhook : identifier l'abonnement et le client
-                .putMetadata("abonnement_id", abonnement.getId().toString())
-                .putMetadata("client_id",     clientId.toString())
-                .putMetadata("type_plan",     typePlan)
-                .setCustomerEmail(client.getEmail())
-                .build();
-
-            Session session = Session.create(params);
-
-            Map<String, String> response = new HashMap<>();
-            response.put("sessionId",   session.getId());
-            response.put("checkoutUrl", session.getUrl());
-            return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.badRequest()
-                .body(new MessageReponse("Erreur Stripe : " + e.getMessage()));
+        // Prix et durée selon le plan
+        long prixCentimes;
+        int  dureeMois;
+        String nomPlan;
+        switch (typePlan) {
+            case "MENSUEL"      -> { prixCentimes = 9900L;   dureeMois = 1;  nomPlan = "Plan Mensuel — BENJEDDOU ERP"; }
+            case "TRIMESTRIEL"  -> { prixCentimes = 24900L;  dureeMois = 3;  nomPlan = "Plan Trimestriel — BENJEDDOU ERP"; }
+            case "ANNUEL"       -> { prixCentimes = 79900L;  dureeMois = 12; nomPlan = "Plan Annuel — BENJEDDOU ERP"; }
+            default             -> { prixCentimes = 9900L;   dureeMois = 1;  nomPlan = "Plan Mensuel — BENJEDDOU ERP"; }
         }
+
+        final long   finalPrixCentimes = prixCentimes;
+        final int    finalDureeMois    = dureeMois;
+        final String finalNomPlan      = nomPlan;
+        final String finalTypePlan     = typePlan;
+        final Long   finalClientId     = clientId;
+
+        // ⚠ Toutes les opérations JPA (abonnements, utilisateurs) sur la base MASTER
+        // Les tables abonnements et utilisateurs CLIENT n'existent QUE dans master
+        return MasterTenantContext.run(() -> {
+            try {
+                Optional<Utilisateur> userOpt = utilisateurRepository.findById(finalClientId);
+                if (userOpt.isEmpty()) return ResponseEntity.notFound().build();
+                Utilisateur client = userOpt.get();
+
+                // Vérifier si l'utilisateur a déjà un abonnement actif/en attente
+                List<Abonnement> existing = abonnementRepository.findByClientOrderByDateSoumissionDesc(client);
+                boolean hasActive = existing.stream().anyMatch(a ->
+                    a.getStatut() == StatutAbonnement.ACTIF ||
+                    a.getStatut() == StatutAbonnement.EN_ATTENTE ||
+                    a.getStatut() == StatutAbonnement.VALIDE
+                );
+                if (hasActive) {
+                    return ResponseEntity.badRequest()
+                        .body(new MessageReponse("Vous avez déjà un abonnement actif ou en cours."));
+                }
+
+                // Enregistrer l'abonnement en attente de paiement Stripe (dans MASTER)
+                TypePlanAbonnement planEnum = TypePlanAbonnement.valueOf(finalTypePlan);
+                BigDecimal prix = BigDecimal.valueOf(finalPrixCentimes).divide(BigDecimal.valueOf(100));
+                Abonnement abonnement = Abonnement.builder()
+                    .client(client)
+                    .typePlan(planEnum)
+                    .prix(prix)
+                    .dureeMois(finalDureeMois)
+                    .statut(StatutAbonnement.EN_ATTENTE)
+                    .methodePaiement("STRIPE")
+                    .build();
+                abonnement = abonnementRepository.save(abonnement);
+
+                // Construire la session Stripe Checkout (appel API externe, pas de JPA)
+                SessionCreateParams params = SessionCreateParams.builder()
+                    .setMode(SessionCreateParams.Mode.PAYMENT)
+                    .setSuccessUrl(successUrl + "?session_id={CHECKOUT_SESSION_ID}&abonnement_id=" + abonnement.getId())
+                    .setCancelUrl(cancelUrl)
+                    .addLineItem(
+                        SessionCreateParams.LineItem.builder()
+                            .setQuantity(1L)
+                            .setPriceData(
+                                SessionCreateParams.LineItem.PriceData.builder()
+                                    .setCurrency("eur")
+                                    .setUnitAmount(finalPrixCentimes)
+                                    .setProductData(
+                                        SessionCreateParams.LineItem.PriceData.ProductData.builder()
+                                            .setName(finalNomPlan)
+                                            .setDescription(finalDureeMois + " mois d'accès complet à BENJEDDOU ERP")
+                                            .addImage("https://via.placeholder.com/100x100/f97316/ffffff?text=ERP")
+                                            .build()
+                                    )
+                                    .build()
+                            )
+                            .build()
+                    )
+                    .putMetadata("abonnement_id", abonnement.getId().toString())
+                    .putMetadata("client_id",     finalClientId.toString())
+                    .putMetadata("type_plan",     finalTypePlan)
+                    .setCustomerEmail(client.getEmail())
+                    .build();
+
+                Session session = Session.create(params);
+
+                Map<String, String> response = new HashMap<>();
+                response.put("sessionId",   session.getId());
+                response.put("checkoutUrl", session.getUrl());
+                return ResponseEntity.ok(response);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+                return ResponseEntity.badRequest()
+                    .body(new MessageReponse("Erreur Stripe : " + e.getMessage()));
+            }
+        });
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -360,41 +369,45 @@ public class StripeController {
     }
 
     // ── Méthode interne : activer l'abonnement après paiement ──
+    // ⚠ Toutes les opérations JPA forcées sur MASTER
     private void activerAbonnement(Long abonnementId, Long clientId, String sessionId, String typePlan) {
-        Optional<Abonnement> abOpt = abonnementRepository.findById(abonnementId);
-        Optional<Utilisateur> userOpt = utilisateurRepository.findById(clientId);
+        MasterTenantContext.run(() -> {
+            Optional<Abonnement> abOpt   = abonnementRepository.findById(abonnementId);
+            Optional<Utilisateur> userOpt = utilisateurRepository.findById(clientId);
 
-        if (abOpt.isEmpty() || userOpt.isEmpty()) return;
+            if (abOpt.isEmpty() || userOpt.isEmpty()) return null;
 
-        Abonnement ab     = abOpt.get();
-        Utilisateur client = userOpt.get();
+            Abonnement ab      = abOpt.get();
+            Utilisateur client = userOpt.get();
 
-        // Ne pas réactiver si déjà actif
-        if (ab.getStatut() == StatutAbonnement.ACTIF) return;
+            // Ne pas réactiver si déjà actif
+            if (ab.getStatut() == StatutAbonnement.ACTIF) return null;
 
-        ab.setStatut(StatutAbonnement.ACTIF);
-        ab.setDateDebut(LocalDateTime.now());
-        ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois()));
-        ab.setReferencePaiement("stripe_" + sessionId);
-        ab.setNotesAdmin("Paiement confirmé par Stripe Checkout");
-        abonnementRepository.save(ab);
+            ab.setStatut(StatutAbonnement.ACTIF);
+            ab.setDateDebut(LocalDateTime.now());
+            ab.setDateFin(LocalDateTime.now().plusMonths(ab.getDureeMois()));
+            ab.setReferencePaiement("stripe_" + sessionId);
+            ab.setNotesAdmin("Paiement confirmé par Stripe Checkout");
+            abonnementRepository.save(ab);
 
-        // Activer le compte client
-        client.setStatutCompte(StatutCompte.ACTIF);
-        client.setActif(true);
-        client.setModeTrial(false);
-        client.setNbUtilisations(0);
-        utilisateurRepository.save(client);
+            // Activer le compte client dans MASTER
+            client.setStatutCompte(StatutCompte.ACTIF);
+            client.setActif(true);
+            client.setModeTrial(false);
+            client.setNbUtilisations(0);
+            utilisateurRepository.save(client);
 
-        // Email de confirmation
-        String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
-        emailService.envoyerNotificationActivationCompte(
-            client.getEmail(),
-            client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
-            typePlan,
-            dateFin
-        );
+            // Email de confirmation
+            String dateFin = ab.getDateFin() != null ? ab.getDateFin().toString() : "";
+            emailService.envoyerNotificationActivationCompte(
+                client.getEmail(),
+                client.getPrenom() != null ? client.getPrenom() : client.getNomUtilisateur(),
+                typePlan,
+                dateFin
+            );
 
-        System.out.println("[Stripe] Compte " + client.getEmail() + " activé ✅");
+            System.out.println("[Stripe] Compte " + client.getEmail() + " activé ✅");
+            return null;
+        });
     }
 }
